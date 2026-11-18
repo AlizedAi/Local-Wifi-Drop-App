@@ -70,6 +70,14 @@ jobs:
             --exclude='planning/' \
             --exclude='plans/' \
             --exclude='*.log' \
+            --exclude='AI_HANDOFF.md' \
+            --exclude='ARCHITECTURE.md' \
+            --exclude='BUGS.md' \
+            --exclude='CHANGELOG.md' \
+            --exclude='DECISIONS.md' \
+            --exclude='NEXT_STEP.md' \
+            --exclude='PROJECT_STATUS.md' \
+            --exclude='ROADMAP.md' \
             private-source/ /tmp/publish/
           find /tmp/publish -type d \( -name '.git' -o -name '.github' \) -prune -exec rm -rf {} +
           rm -f /tmp/publish/README.md
