@@ -1,0 +1,82 @@
+import 'package:flutter/foundation.dart';
+
+import 'transfer_alert.dart';
+import 'app_log_controller.dart';
+import 'transfer_alert_history.dart';
+import 'public_storage_service.dart';
+
+/// App-lifetime bridge between transfer sessions and the visible history UI.
+class TransferAlertController extends ChangeNotifier {
+  TransferAlertController({TransferAlertHistory? history})
+      : _history = history ?? TransferAlertHistory();
+
+  final TransferAlertHistory _history;
+  bool _hasUnreadAlert = false;
+
+  bool get hasUnreadAlert => _hasUnreadAlert;
+
+  void markAlertsViewed() {
+    if (!_hasUnreadAlert) return;
+    _hasUnreadAlert = false;
+    notifyListeners();
+  }
+
+  List<TransferAlert> get items => _history.items;
+
+  /// Direction-aware callbacks for sender and receiver sessions.
+  void Function(TransferAlert) get onSendAlert => (alert) => add(
+        TransferAlert(fileName: alert.fileName, status: alert.status, direction: TransferDirection.send),
+      );
+  void Function(TransferAlert) get onReceiveAlert => (alert) => add(
+        TransferAlert(fileName: alert.fileName, status: alert.status, direction: TransferDirection.receive),
+      );
+
+  /// Backwards-compatible callback; defaults to the send list.
+  void Function(TransferAlert) get onAlert => onSendAlert;
+
+  void add(TransferAlert alert) {
+    _history.add(alert);
+    _hasUnreadAlert = true;
+    final direction = alert.direction == TransferDirection.send ? 'SEND' : 'RECEIVE';
+    final level = alert.succeeded ? AppLogLevel.success : alert.status == TransferAlertStatus.failed ? AppLogLevel.error : AppLogLevel.warning;
+    AppLogController.instance.record(direction, '${alert.fileName}: ${alert.status.name.toUpperCase()}', level: level);
+    notifyListeners();
+    _persistHistory();
+  }
+
+  void addAll(Iterable<TransferAlert> alerts) {
+    final incoming = alerts.toList(growable: false);
+    if (incoming.isNotEmpty) _hasUnreadAlert = true;
+    _history.addAll(incoming);
+    notifyListeners();
+    _persistHistory();
+  }
+
+  void clear() {
+    if (_history.items.isNotEmpty) {
+      AppLogController.instance.record('HISTORY', 'Transfer history cleared');
+    }
+    _history.clear();
+    _hasUnreadAlert = false;
+    notifyListeners();
+    _persistHistory();
+  }
+
+  void _persistHistory() {
+    final snapshot = _history.items.map((item) => {
+      'fileName': item.fileName,
+      'status': item.status.name,
+      'direction': item.direction.name,
+    }).toList(growable: false);
+    PublicStorageService.instance.writeJson(
+      subfolder: 'history',
+      fileName: 'transfer-history.json',
+      value: {
+        'updatedAt': DateTime.now().toIso8601String(),
+        'items': snapshot,
+      },
+    ).catchError((_) {
+      // History export is best-effort and must not interrupt transfers.
+    });
+  }
+}
