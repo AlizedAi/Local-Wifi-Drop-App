@@ -1,7 +1,7 @@
 name: local_wifi_drop
 description: Local-first peer-to-peer file sharing over Wi-Fi.
 publish_to: "none"
-version: 1.0.148+148
+version: 1.1.00+10100
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
