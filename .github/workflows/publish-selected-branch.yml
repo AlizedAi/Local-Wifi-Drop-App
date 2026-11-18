@@ -80,6 +80,9 @@ jobs:
             --exclude='ROADMAP.md' \
             private-source/ /tmp/publish/
           find /tmp/publish -type d \( -name '.git' -o -name '.github' \) -prune -exec rm -rf {} +
+          if [ "${{ inputs.platform }}" != "android" ]; then
+            rm -rf /tmp/publish/android
+          fi
           rm -f /tmp/publish/README.md
           if [ "${{ inputs.platform }}" = "android" ]; then
             mkdir -p /tmp/publish/.github/workflows
