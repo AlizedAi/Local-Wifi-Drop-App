@@ -98,14 +98,14 @@ jobs:
             Copy-Item -Path $runtimeSource -Destination $releaseDir -Force
           }
           foreach ($runtimeName in $runtimeNames) { if (!(Test-Path (Join-Path $releaseDir $runtimeName))) { throw "Visual C++ runtime DLL was not bundled: $runtimeName" } }
-          Rename-Item $exe "Local-Wifi-Drop.exe"
+          Rename-Item $exe "Local-Wifi-Drop-${{ steps.app-version.outputs.value }}.exe"
 
           # Package only runtime files: EXE, required DLLs and Flutter data.
           # Exclude debug symbols, generated metadata and documentation.
           $packageDir = "package/Local-Wifi-Drop"
           if (Test-Path "package") { Remove-Item "package" -Recurse -Force }
           New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
-          Copy-Item (Join-Path $releaseDir "Local-Wifi-Drop.exe") $packageDir
+          Copy-Item (Join-Path $releaseDir "Local-Wifi-Drop-${{ steps.app-version.outputs.value }}.exe") $packageDir
           Copy-Item (Join-Path $releaseDir "*.dll") $packageDir
           Copy-Item (Join-Path $releaseDir "data") $packageDir -Recurse
           if (Test-Path (Join-Path $packageDir "dartjni.dll")) { throw "Unused dartjni.dll remains in the portable package." }
