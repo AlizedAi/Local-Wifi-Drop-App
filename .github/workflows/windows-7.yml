@@ -115,7 +115,7 @@ jobs:
           $version = (Get-Content "windows_version.txt" -Raw).Trim()
           $parts = $version.Split('.')
           if ($parts.Length -ne 3 -or $parts[0] -ne '1' -or $parts[1] -ne '1' -or $parts[2] -ne '00') {
-            throw "windows_version.txt must contain a version in the form 1.0.xxx"
+            throw "windows_version.txt must contain a numeric three-part version such as 1.1.00"
           }
           $buildNumber = ([int]$parts[0] * 10000) + ([int]$parts[1] * 100) + [int]$parts[2]
           "value=$version" >> $env:GITHUB_OUTPUT
