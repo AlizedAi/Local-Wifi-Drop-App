@@ -1,0 +1,63 @@
+name: Android universal test APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'lib/**'
+      - 'test/**'
+      - 'android/**'
+      - '.github/workflows/android-universal-apk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-universal-apk-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-universal-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.9"
+          cache: true
+
+      - name: Resolve packages
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Run tests
+        run: flutter test
+
+      - name: Build universal Android APK
+        run: |
+          flutter build apk --release --target-platform android-arm,android-arm64,android-x64
+          APK="build/app/outputs/flutter-apk/app-release.apk"
+          test -s "$APK"
+          unzip -Z1 "$APK" | grep -q '^lib/arm64-v8a/'
+          unzip -Z1 "$APK" | grep -q '^lib/armeabi-v7a/'
+          unzip -Z1 "$APK" | grep -q '^lib/x86_64/'
+          mkdir -p dist
+          cp "$APK" "dist/Local-Wifi-Drop-1.1.00-Universal-Android.apk"
+          ls -lh "dist/Local-Wifi-Drop-1.1.00-Universal-Android.apk"
+
+      - name: Upload universal APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Local-Wifi-Drop-1.1.00-Universal-Android-APK
+          path: dist/Local-Wifi-Drop-1.1.00-Universal-Android.apk
+          if-no-files-found: error
+          retention-days: 30
