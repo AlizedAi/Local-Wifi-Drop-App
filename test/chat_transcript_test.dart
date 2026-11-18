@@ -57,4 +57,30 @@ void main() {
     );
     expect(pending.style?.color, Colors.black);
   });
+
+  testWidgets('outgoing bubbles are on the left and incoming bubbles are on the right',
+      (tester) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(
+          body: ChatTranscript(
+            messages: [
+              ChatMessage(id: 1, text: 'Outgoing', isOutgoing: true),
+              ChatMessage(id: 2, text: 'Incoming', isOutgoing: false),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    final outgoingAlign = tester.widget<Align>(
+      find.ancestor(of: find.text('Outgoing'), matching: find.byType(Align)).first,
+    );
+    final incomingAlign = tester.widget<Align>(
+      find.ancestor(of: find.text('Incoming'), matching: find.byType(Align)).first,
+    );
+    expect(outgoingAlign.alignment, Alignment.centerLeft);
+    expect(incomingAlign.alignment, Alignment.centerRight);
+  });
+
 }

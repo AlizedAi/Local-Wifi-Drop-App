@@ -51,13 +51,13 @@ jobs:
           unzip -Z1 "$APK" | grep -q '^lib/armeabi-v7a/'
           unzip -Z1 "$APK" | grep -q '^lib/x86_64/'
           mkdir -p dist
-          cp "$APK" "dist/Local-Wifi-Drop-1.1.00-Universal-Android.apk"
-          ls -lh "dist/Local-Wifi-Drop-1.1.00-Universal-Android.apk"
+          cp "$APK" "dist/Local-Wifi-Drop-1.0.158-Universal-Android.apk"
+          ls -lh "dist/Local-Wifi-Drop-1.0.158-Universal-Android.apk"
 
       - name: Upload universal APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Local-Wifi-Drop-1.1.00-Universal-Android-APK
-          path: dist/Local-Wifi-Drop-1.1.00-Universal-Android.apk
+          name: Local-Wifi-Drop-1.0.158-Universal-Android-APK
+          path: dist/Local-Wifi-Drop-1.0.158-Universal-Android.apk
           if-no-files-found: error
           retention-days: 30

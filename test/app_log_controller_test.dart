@@ -64,7 +64,6 @@ void main() {
       final log = AppLogController.test(
         readStored: () => stored.future,
         writePrivate: (_) async {},
-        writePublic: (_) async {},
       );
 
       final restoring = log.restore();
@@ -102,7 +101,6 @@ void main() {
           },
         ]),
         writePrivate: (_) async {},
-        writePublic: (_) async {},
       );
 
       await log.restore();
@@ -123,7 +121,6 @@ void main() {
             await releaseFirstWrite.future;
           }
         },
-        writePublic: (_) async {},
       );
 
       final restoring = log.restore();

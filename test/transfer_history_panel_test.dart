@@ -14,7 +14,7 @@ void main() {
     expect(find.text('Alert List'), findsOneWidget);
     expect(find.text('↑  SEND DATA'), findsNothing);
     expect(find.text('↓  RECEIVE DATA'), findsNothing);
-    expect(find.text('No activity yet'), findsNothing);
+    expect(find.text('No file activity yet'), findsOneWidget);
     expect(find.byKey(const ValueKey('send-action-section')), findsNothing);
     expect(find.byKey(const ValueKey('receive-action-section')), findsNothing);
     final panelSize = tester.getSize(find.byKey(const ValueKey('action-list-panel')));
@@ -22,7 +22,7 @@ void main() {
     expect(panelSize.height, 344);
   });
 
-  testWidgets('transfer records remain hidden while inner cards are removed', (tester) async {
+  testWidgets('transfer records are shown with direction and status', (tester) async {
     final controller = TransferAlertController();
     addTearDown(controller.dispose);
 
@@ -33,11 +33,12 @@ void main() {
     controller.add(const TransferAlert(fileName: 'received.mp3', status: TransferAlertStatus.received, direction: TransferDirection.receive));
     await tester.pump();
 
-    expect(find.text('sent.jpg'), findsNothing);
-    expect(find.text('failed.pdf'), findsNothing);
-    expect(find.text('received.mp3'), findsNothing);
-    expect(find.text('DONE'), findsNothing);
-    expect(find.text('FAIL'), findsNothing);
+    expect(find.text('sent.jpg'), findsOneWidget);
+    expect(find.text('failed.pdf'), findsOneWidget);
+    expect(find.text('received.mp3'), findsOneWidget);
+    expect(find.text('Send · SENT'), findsOneWidget);
+    expect(find.text('Send · FAILED'), findsOneWidget);
+    expect(find.text('Receive · RECEIVED'), findsOneWidget);
     expect(find.text('↑  SEND DATA'), findsNothing);
     expect(find.text('↓  RECEIVE DATA'), findsNothing);
   });
@@ -53,6 +54,6 @@ void main() {
 
     expect(controller.items, isEmpty);
     expect(find.text('B.MP3'), findsNothing);
-    expect(find.text('No activity yet'), findsNothing);
+    expect(find.text('No file activity yet'), findsOneWidget);
   });
 }

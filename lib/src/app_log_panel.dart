@@ -82,7 +82,7 @@ class _AppLogPanelState extends State<AppLogPanel> {
           width: double.infinity,
           height: double.infinity,
           decoration: BoxDecoration(
-            color: const Color(0xF20B0F0D),
+            color: Colors.black,
             border: Border.all(color: const Color(0xFF20D65A), width: 1),
             borderRadius: BorderRadius.circular(9),
           ),
@@ -92,7 +92,7 @@ class _AppLogPanelState extends State<AppLogPanel> {
                 height: 38,
                 padding: const EdgeInsets.symmetric(horizontal: 6),
                 decoration: const BoxDecoration(
-                  color: Color(0xFF12351F),
+                  color: Colors.black,
                   borderRadius: BorderRadius.vertical(top: Radius.circular(8)),
                 ),
                 child: Row(

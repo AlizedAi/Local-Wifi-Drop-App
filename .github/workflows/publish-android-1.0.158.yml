@@ -1,0 +1,54 @@
+name: Publish verified Android 1.0.158
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-android-1.0.158.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the exact tested 1.0.158 artifact from the private repository
+        env:
+          SOURCE_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          test -n "$SOURCE_TOKEN"
+          curl -fL \
+            -H "Authorization: Bearer $SOURCE_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/AlizedAi/Local-Wifi-Drop/actions/artifacts/14144638975/zip" \
+            -o /tmp/android-1.0.158.zip
+          mkdir -p /tmp/android-1.0.158
+          unzip -q /tmp/android-1.0.158.zip -d /tmp/android-1.0.158
+          APK="$(find /tmp/android-1.0.158 -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          test -s "$APK"
+          cp "$APK" Local-Wifi-Drop-1.0.158.apk
+          ls -lh Local-Wifi-Drop-1.0.158.apk
+
+      - name: Publish Android 1.0.158 and remove only the old Android asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view v1.0.158 --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release upload v1.0.158 Local-Wifi-Drop-1.0.158.apk \
+              --repo "${GITHUB_REPOSITORY}" --clobber
+          else
+            gh release create v1.0.158 Local-Wifi-Drop-1.0.158.apk \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target main \
+              --title "Local Wi-Fi Drop 1.0.158" \
+              --notes "Exact previously tested Android build 1.0.158. Source snapshot: 4b7385eef268e29d01414f0bcc9c8e49b949e519. Universal APK for ARM64, ARMv7 and x86_64; minimum Android API 24."
+          fi
+
+          if gh release view v1.1.00 --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release delete-asset v1.1.00 \
+              Local-Wifi-Drop-1.1.00-Universal-Android.apk \
+              --repo "${GITHUB_REPOSITORY}" --yes || true
+          fi

@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
-import 'public_storage_service.dart';
 
 enum AppLogLevel { info, warning, error, success }
 
@@ -42,13 +41,11 @@ class AppLogEntry {
   );
 }
 
-/// App-wide diagnostic log. On Android, entries are restored and saved locally
-/// through the app's existing private foreground-task storage.
+/// App-wide diagnostic log. Entries are stored only in app-private storage.
 class AppLogController extends ChangeNotifier {
   AppLogController._()
       : _readStored = _readPrivateData,
-        _writePrivate = _savePrivateData,
-        _writePublic = _savePublicData;
+        _writePrivate = _savePrivateData;
 
   static Future<String?> _readPrivateData() =>
       FlutterForegroundTask.getData<String>(key: _storageKey);
@@ -57,21 +54,12 @@ class AppLogController extends ChangeNotifier {
     await FlutterForegroundTask.saveData(key: _storageKey, value: snapshot);
   }
 
-  static Future<void> _savePublicData(String snapshot) =>
-      PublicStorageService.instance.writeInfoFile(
-        subfolder: 'logs',
-        fileName: 'app-log.json',
-        content: snapshot,
-      );
-
   @visibleForTesting
   AppLogController.test({
     required Future<String?> Function() readStored,
     required Future<void> Function(String snapshot) writePrivate,
-    required Future<void> Function(String snapshot) writePublic,
   })  : _readStored = readStored,
-        _writePrivate = writePrivate,
-        _writePublic = writePublic;
+        _writePrivate = writePrivate;
 
   static final AppLogController instance = AppLogController._();
 
@@ -85,7 +73,6 @@ class AppLogController extends ChangeNotifier {
 
   final Future<String?> Function() _readStored;
   final Future<void> Function(String snapshot) _writePrivate;
-  final Future<void> Function(String snapshot) _writePublic;
 
   @visibleForTesting
   Future<void> get pendingWrites => _writeQueue;
@@ -172,11 +159,6 @@ class AppLogController extends ChangeNotifier {
         await _writePrivate(snapshot);
       } catch (_) {
         // Private persistence is best-effort and must never interrupt transfers.
-      }
-      try {
-        await _writePublic(snapshot);
-      } catch (_) {
-        // Shared export is best-effort; diagnostics must never interrupt transfers.
       }
     }
     _persistenceRunning = false;

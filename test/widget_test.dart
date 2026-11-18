@@ -3,11 +3,15 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_wifi_drop/main.dart';
 import 'package:local_wifi_drop/src/app_log_controller.dart';
+import 'package:local_wifi_drop/src/app_language_controller.dart';
 import 'package:local_wifi_drop/src/chat_store.dart';
 import 'package:local_wifi_drop/src/local_peer_discovery.dart';
 
 void main() {
-  setUp(() => ChatStore.instance.clear());
+  setUp(() {
+    ChatStore.instance.clear();
+    AppLanguageController.instance.language.value = AppLanguageController.english;
+  });
 
   Future<void> pumpUntilHitTestable(WidgetTester tester, Finder finder) async {
     for (var attempt = 0; attempt < 20; attempt++) {
@@ -35,6 +39,34 @@ void main() {
     expect(find.byKey(const ValueKey('paste-text-message')), findsOneWidget);
     expect(find.text('Send files'), findsNothing);
     expect(find.text('Receive files'), findsNothing);
+  });
+
+  testWidgets('Persian composer is right-aligned and swaps Send/Paste only', (tester) async {
+    AppLanguageController.instance.language.value = AppLanguageController.persian;
+    await tester.pumpWidget(const LocalWifiDropApp());
+    await tester.pump();
+
+    final messageField = tester.widget<TextField>(
+      find.byKey(const ValueKey('send-message-field')),
+    );
+    expect(messageField.textDirection, TextDirection.rtl);
+    expect(messageField.textAlign, TextAlign.right);
+
+    final sendButton = tester.getRect(
+      find.byKey(const ValueKey('send-text-message')),
+    );
+    final pasteButton = tester.getRect(
+      find.byKey(const ValueKey('paste-text-message')),
+    );
+    expect(pasteButton.left, lessThan(sendButton.left));
+
+    final sendTab = tester.getRect(
+      find.byKey(const ValueKey('send-header-send-tab')),
+    );
+    final receiveTab = tester.getRect(
+      find.byKey(const ValueKey('send-header-receive-tab')),
+    );
+    expect(sendTab.left, lessThan(receiveTab.left));
   });
 
   testWidgets('Send screen does not use the Wi-Fi router gateway as its device IP', (tester) async {
@@ -177,7 +209,7 @@ void main() {
     expect(find.byKey(const ValueKey('receive-sender-address')), findsOneWidget);
   });
 
-  testWidgets('Receive uses compact sender and one-file display areas', (tester) async {
+  testWidgets('Receive tab hosts inline file approval and recent-file controls', (tester) async {
     await tester.pumpWidget(const LocalWifiDropApp());
     await tester.tap(find.byKey(const ValueKey('send-header-receive-tab')));
     await tester.pump();
@@ -190,14 +222,15 @@ void main() {
     expect(tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Open')).onPressed, isNull);
     expect(tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Delete')).onPressed, isNull);
 
-    await tester.scrollUntilVisible(
-      find.byKey(const ValueKey('received-files-list')),
-      200,
-      scrollable: find.byType(Scrollable).first,
-    );
+    expect(find.byKey(const ValueKey('receive-incoming-file-name')), findsOneWidget);
+    expect(find.text('Received Files · Last 3'), findsOneWidget);
+    expect(find.text('No received files'), findsOneWidget);
+    expect(find.widgetWithText(FilledButton, 'Accept'), findsOneWidget);
+    expect(find.widgetWithText(OutlinedButton, 'Reject'), findsOneWidget);
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Accept')).onPressed, isNull);
+    expect(tester.widget<OutlinedButton>(find.widgetWithText(OutlinedButton, 'Reject')).onPressed, isNull);
     expect(find.widgetWithText(OutlinedButton, 'Open'), findsOneWidget);
     expect(find.widgetWithText(OutlinedButton, 'Delete'), findsOneWidget);
-    expect(tester.getSize(find.byKey(const ValueKey('received-files-list'))).height, 56);
 
     await tester.scrollUntilVisible(
       find.byKey(const ValueKey('received-message-field')),
@@ -434,6 +467,112 @@ testWidgets('Log text is one continuous selectable area across entries', (tester
     final copied = await Clipboard.getData(Clipboard.kTextPlain);
     expect(copied?.text, selectedText);
     expect(clipboardText, selectedText);
+  });
+
+
+  testWidgets('IP selector keeps a white inner field with black IP text', (tester) async {
+    await tester.pumpWidget(const LocalWifiDropApp());
+    final picker = find.byKey(const ValueKey('send-destination-picker'));
+    final decorator = tester.widget<InputDecorator>(
+      find.descendant(of: picker, matching: find.byType(InputDecorator)).first,
+    );
+    expect(decorator.decoration.fillColor, Colors.white);
+    final ipText = tester.widget<Text>(
+      find.descendant(of: picker, matching: find.byType(Text)).first,
+    );
+    expect(ipText.style?.color, Colors.black);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Send header controls remain visible after app resumes', (tester) async {
+    await tester.pumpWidget(const LocalWifiDropApp());
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.hidden);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+    await tester.pump();
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.byKey(const ValueKey('send-options-menu')).hitTestable(), findsOneWidget);
+    expect(find.byKey(const ValueKey('send-alerts-button')).hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('changing language closes Options before it can retain a stale position', (tester) async {
+    await tester.pumpWidget(const LocalWifiDropApp());
+    await tester.tap(find.byKey(const ValueKey('send-options-menu')));
+    await tester.pump(const Duration(milliseconds: 400));
+    final persianOption = find.byKey(const ValueKey('language-option-fa'));
+    await pumpUntilHitTestable(tester, persianOption);
+    await tester.tap(persianOption);
+    await tester.pumpAndSettle();
+
+    expect(find.byType(PopupMenuItem<String>), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('send-options-menu')));
+    await tester.pump(const Duration(milliseconds: 400));
+    await pumpUntilHitTestable(
+      tester,
+      find.byKey(const ValueKey('language-option-fa')),
+    );
+    expect(find.byKey(const ValueKey('language-option-fa')).hitTestable(), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Persian About content is centered and follows the requested order', (tester) async {
+    AppLanguageController.instance.language.value = AppLanguageController.persian;
+    await tester.pumpWidget(const LocalWifiDropApp());
+    await tester.tap(find.byKey(const ValueKey('send-options-menu')));
+    await tester.pump(const Duration(milliseconds: 400));
+    final aboutItem = find.text('درباره');
+    await pumpUntilHitTestable(tester, aboutItem);
+    await tester.tap(aboutItem);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final dialog = find.byType(AlertDialog);
+    final body = tester.widget<SelectableText>(
+      find.descendant(of: dialog, matching: find.byType(SelectableText)),
+    );
+    expect(body.data, startsWith('سازنده : Ali.z با کمک Chat GPT به اسم Nova'));
+    expect(body.data, contains('تماس با ما : Zeydi.Ali.71@Gmail.com'));
+    expect(body.data, contains('توضیحات :'));
+    expect(body.data, contains('امکانات :'));
+    expect(body.data, contains('نکات مهم :'));
+    expect(body.data, endsWith('امیدوارم لذت ببرید'));
+    expect(body.textAlign, TextAlign.center);
+    final title = tester.widget<Text>(
+      find.descendant(of: dialog, matching: find.text('Local Wi-Fi Drop')),
+    );
+    expect(title.textAlign, TextAlign.center);
+    expect(tester.widget<AlertDialog>(dialog).actionsAlignment, MainAxisAlignment.center);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('English About content is centered and includes the translation', (tester) async {
+    await tester.pumpWidget(const LocalWifiDropApp());
+    await tester.tap(find.byKey(const ValueKey('send-options-menu')));
+    await tester.pump(const Duration(milliseconds: 400));
+    final aboutItem = find.text('About');
+    await pumpUntilHitTestable(tester, aboutItem);
+    await tester.tap(aboutItem);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final dialog = find.byType(AlertDialog);
+    final body = tester.widget<SelectableText>(
+      find.descendant(of: dialog, matching: find.byType(SelectableText)),
+    );
+    expect(body.data, startsWith('Creator: Ali.z with the help of ChatGPT named Nova'));
+    expect(body.data, contains('No internet usage'));
+    expect(body.data, contains('Never send sensitive files while connected to public Wi-Fi routers.'));
+    expect(body.data, endsWith('I hope you enjoy it.'));
+    expect(body.textAlign, TextAlign.center);
+    expect(tester.takeException(), isNull);
   });
 
 }

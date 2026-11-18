@@ -1,19 +1,16 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:open_filex/open_filex.dart';
 import 'src/pairing_invite.dart';
 import 'src/chat_transcript.dart';
 import 'src/chat_store.dart';
 import 'src/local_message_client.dart';
-import 'src/background_message_service.dart';
+import 'src/active_message_receiver.dart';
 import 'src/transfer_alert_controller.dart';
 import 'src/transfer_history_panel.dart';
 import 'src/pairing_session_authenticator.dart';
@@ -28,44 +25,13 @@ import 'src/transfer_manifest.dart';
 import 'src/local_peer_discovery.dart';
 import 'src/send_header.dart';
 import 'src/app_log_controller.dart';
+import 'src/app_language_controller.dart';
+import 'src/message_sound.dart';
+import 'src/sent_file_selection.dart';
 import 'src/public_storage_service.dart';
-
-const String _pendingIncomingMessagesKey = 'pending_incoming_messages';
-bool _backgroundServiceStarting = false;
-
-Future<void> _ensureBackgroundMessageServiceStarted() async {
-  if (!Platform.isAndroid || _backgroundServiceStarting) return;
-  _backgroundServiceStarting = true;
-  try {
-    var permission = await FlutterForegroundTask.checkNotificationPermission();
-    if (permission != NotificationPermission.granted) {
-      await FlutterForegroundTask.requestNotificationPermission();
-      permission = await FlutterForegroundTask.checkNotificationPermission();
-    }
-    if (permission != NotificationPermission.granted) {
-      AppLogController.instance.record('MESSAGE', 'Background message service not started: notification permission denied', level: AppLogLevel.warning);
-      return;
-    }
-    if (await FlutterForegroundTask.isRunningService) return;
-    await FlutterForegroundTask.startService(
-      serviceId: 4201,
-      notificationTitle: 'Local WiFi Drop',
-      notificationText: 'آماده دریافت پیام از شبکه وای‌فای',
-      notificationInitialRoute: '/',
-      callback: startBackgroundMessageTask,
-      serviceTypes: const [ForegroundServiceTypes.remoteMessaging],
-    );
-  } catch (error) {
-    AppLogController.instance.record('MESSAGE_RX', 'Could not start Android foreground message service: $error', level: AppLogLevel.error);
-  } finally {
-    _backgroundServiceStarting = false;
-  }
-}
-
 
 void main() {
   AppLogController.instance.record('APP', 'Application process started', level: AppLogLevel.success);
-  if (Platform.isAndroid) FlutterForegroundTask.initCommunicationPort();
   runApp(const LocalWifiDropApp());
 }
 
@@ -81,37 +47,15 @@ class LocalWifiDropApp extends StatefulWidget {
 class _LocalWifiDropAppState extends State<LocalWifiDropApp> with WidgetsBindingObserver {
   final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   final TransferAlertController _alerts = TransferAlertController();
-  final FlutterLocalNotificationsPlugin _incomingNotifications =
-      FlutterLocalNotificationsPlugin();
-  bool _showingPendingMessages = false;
+  final ActiveMessageReceiver _messageReceiver = ActiveMessageReceiver();
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    unawaited(AppLanguageController.instance.load());
+    AppLanguageController.instance.language.addListener(_onLanguageChanged);
     if (Platform.isAndroid) {
-      FlutterForegroundTask.init(
-        androidNotificationOptions: AndroidNotificationOptions(
-          channelId: 'local_wifi_drop_service',
-          channelName: 'Local WiFi Drop service',
-          channelDescription: 'Keeps local message reception available in the background.',
-          channelImportance: NotificationChannelImportance.MIN,
-          priority: NotificationPriority.MIN,
-          onlyAlertOnce: true,
-        ),
-        iosNotificationOptions: const IOSNotificationOptions(
-          showNotification: false,
-          playSound: false,
-        ),
-        foregroundTaskOptions: ForegroundTaskOptions(
-          eventAction: ForegroundTaskEventAction.repeat(60000),
-          autoRunOnBoot: false,
-          autoRunOnMyPackageReplaced: false,
-          allowWakeLock: true,
-          allowWifiLock: true,
-        ),
-      );
-      FlutterForegroundTask.addTaskDataCallback(_onBackgroundTaskData);
       unawaited(AppLogController.instance.restore());
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -119,29 +63,21 @@ class _LocalWifiDropAppState extends State<LocalWifiDropApp> with WidgetsBinding
     });
   }
 
-  Future<void> _initializeAppMessaging() async {
-    if (!Platform.isAndroid) return;
-    try {
-      await _incomingNotifications.initialize(
-        settings: const InitializationSettings(
-          android: AndroidInitializationSettings('ic_notification'),
-        ),
-        onDidReceiveNotificationResponse: (_) {
-          unawaited(_showPendingIncomingMessages());
-        },
-      );
-      await _ensureBackgroundMessageServiceStarted();
-      await _showPendingIncomingMessages();
-    } catch (_) {
-      // Message reception can continue even if notification tap setup fails.
-      unawaited(_ensureBackgroundMessageServiceStarted());
-    }
-  }
+  void _onLanguageChanged() { if (mounted) setState(() {}); }
 
-  void _onBackgroundTaskData(Object data) {
-    if (data is Map && (data['action'] == 'open_pending_messages' ||
-        data['action'] == 'incoming_message_saved')) {
-      unawaited(_showPendingIncomingMessages());
+  Future<void> _initializeAppMessaging() async {
+    try {
+      await _messageReceiver.start();
+      AppLogController.instance.record('MESSAGE_RX', 'In-app message listener started', level: AppLogLevel.success);
+    } catch (error) {
+      AppLogController.instance.record('MESSAGE_RX', 'Could not start message listener: $error', level: AppLogLevel.error);
+    }
+    if (Platform.isAndroid) {
+      try {
+        await const MethodChannel('local_wifi_drop/storage').invokeMethod<bool>('requestStorageAccess');
+      } catch (error) {
+        AppLogController.instance.record('PERMISSION', 'Could not request full storage access: $error', level: AppLogLevel.warning);
+      }
     }
   }
 
@@ -149,90 +85,16 @@ class _LocalWifiDropAppState extends State<LocalWifiDropApp> with WidgetsBinding
   void didChangeAppLifecycleState(AppLifecycleState state) {
     AppLogController.instance.record('LIFECYCLE', 'App state changed: ${state.name}');
     if (state == AppLifecycleState.detached) {
+      unawaited(_messageReceiver.stop());
       ChatStore.instance.clear();
-      return;
-    }
-    if (!Platform.isAndroid) return;
-    if (state == AppLifecycleState.paused) {
-      // Keep the same receiver running while the UI is backgrounded.
-      unawaited(_ensureBackgroundMessageServiceStarted());
-    } else if (state == AppLifecycleState.resumed) {
-      unawaited(_ensureBackgroundMessageServiceStarted());
-      unawaited(_showPendingIncomingMessages());
-    }
-  }
-
-  Future<void> _showPendingIncomingMessages() async {
-    if (!Platform.isAndroid ||
-        _showingPendingMessages ||
-        !mounted ||
-        WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
-      return;
-    }
-    _showingPendingMessages = true;
-    try {
-      final stored = await FlutterForegroundTask.getData<String>(
-        key: _pendingIncomingMessagesKey,
-      );
-      if (stored == null || stored.isEmpty) return;
-      final decoded = jsonDecode(stored);
-      if (decoded is! List) return;
-      final messages = decoded
-          .whereType<Map>()
-          .map((item) => Map<String, dynamic>.from(item))
-          .toList(growable: false);
-      for (final item in messages) {
-        final message = item['message'] is String ? item['message'] as String : '';
-        final id = item['id'] is String ? item['id'] as String : null;
-        if (message.isNotEmpty) {
-          final sender = item['sender'] is String ? item['sender'] as String : null;
-          final incoming = ChatStore.instance.addIncoming(
-            message,
-            senderAddress: sender,
-            deliveryId: id,
-          );
-          if (incoming != null) {
-            AppLogController.instance.record(
-              'MESSAGE',
-              'Incoming message presented from ${sender ?? 'unknown peer'}',
-              level: AppLogLevel.success,
-            );
-          }
-        }
-        if (id != null) await _removePendingIncomingMessage(id);
-      }
-    } catch (_) {
-      // Keep unread messages stored if the UI cannot process them yet.
-    } finally {
-      _showingPendingMessages = false;
-    }
-  }
-
-  Future<void> _removePendingIncomingMessage(String id) async {
-    final stored = await FlutterForegroundTask.getData<String>(
-      key: _pendingIncomingMessagesKey,
-    );
-    if (stored == null || stored.isEmpty) return;
-    try {
-      final decoded = jsonDecode(stored);
-      if (decoded is! List) return;
-      final remaining = decoded.where((item) =>
-          item is! Map || item['id'] != id).toList(growable: false);
-      await FlutterForegroundTask.saveData(
-        key: _pendingIncomingMessagesKey,
-        value: jsonEncode(remaining),
-      );
-    } on FormatException {
-      // Leave malformed storage untouched for diagnosis.
     }
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    if (Platform.isAndroid) {
-      FlutterForegroundTask.removeTaskDataCallback(_onBackgroundTaskData);
-    }
+    AppLanguageController.instance.language.removeListener(_onLanguageChanged);
+    unawaited(_messageReceiver.stop());
     _alerts.dispose();
     super.dispose();
   }
@@ -244,7 +106,21 @@ class _LocalWifiDropAppState extends State<LocalWifiDropApp> with WidgetsBinding
       title: 'Local WiFi Drop',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2563EB)),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF2563EB),
+          brightness: Brightness.dark,
+          surface: Colors.black,
+        ),
+        scaffoldBackgroundColor: Colors.black,
+        canvasColor: Colors.black,
+        dialogTheme: const DialogThemeData(
+          backgroundColor: Colors.black,
+          surfaceTintColor: Colors.transparent,
+        ),
+        popupMenuTheme: const PopupMenuThemeData(
+          color: Colors.black,
+          surfaceTintColor: Colors.transparent,
+        ),
         useMaterial3: true,
       ),
       home: SendScreen(alerts: _alerts, messagePeerDiscovery: widget.messagePeerDiscovery),
@@ -265,6 +141,9 @@ class SendScreen extends StatefulWidget {
 
 class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
   final GlobalKey _bottomSendButtonAnchorKey = GlobalKey(debugLabel: 'bottom-send-button-anchor');
+  int _headerRevision = 0;
+  GlobalKey _alertButtonKey = GlobalKey(debugLabel: 'send-alert-button');
+  void _onLanguageChanged() { if (mounted) setState(() {}); }
   final List<PlatformFile> _selectedFiles = [];
   bool _isPicking = false;
   bool _isSending = false;
@@ -279,6 +158,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
   String? _manualAddress;
   bool _isDiscovering = false;
   List<String> _discoveredDevices = [];
+  Set<String> _onlineAppDevices = {};
   final LayerLink _peerPickerLayerLink = LayerLink();
   final GlobalKey _peerPickerFieldKey = GlobalKey();
   OverlayEntry? _peerPickerOverlay;
@@ -312,6 +192,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    AppLanguageController.instance.language.addListener(_onLanguageChanged);
     ChatStore.instance.addListener(_onChatStoreChanged);
     final selectedAddress = ChatStore.instance.selectedPeerAddress;
     if (selectedAddress != null) {
@@ -342,7 +223,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     AppLogController.instance.record('LIFECYCLE', 'Send screen state: ${state.name}');
-    if (state != AppLifecycleState.resumed && _isSending) {
+    if (state == AppLifecycleState.detached && _isSending) {
       _cancelSending();
     }
     if (state == AppLifecycleState.resumed) {
@@ -356,13 +237,19 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
     unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
     FocusManager.instance.primaryFocus?.unfocus();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {
+          _headerRevision++;
+          _alertButtonKey = GlobalKey(debugLabel: 'send-alert-button-$_headerRevision');
+        });
+      }
     });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    AppLanguageController.instance.language.removeListener(_onLanguageChanged);
     ChatStore.instance.removeListener(_onChatStoreChanged);
     _cancelRequested = true;
     _cancellation?.cancel();
@@ -411,7 +298,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
         level: AppLogLevel.error,
       );
       if (mounted) {
-        _showMessage('Could not open the file picker: $error');
+        _showMessage('${_tr('Could not open the file picker: ')}$error');
       }
     } finally {
       if (mounted) setState(() => _isPicking = false);
@@ -425,7 +312,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
     final text = clipboard?.text;
     if (text == null || text.isEmpty) {
       AppLogController.instance.record('UI', 'Paste message failed: clipboard is empty', level: AppLogLevel.warning);
-      _showMessage('Clipboard is empty.');
+      _showMessage(_tr('Clipboard is empty.'));
       return;
     }
     AppLogController.instance.record('UI', 'Clipboard text pasted into Send composer');
@@ -440,13 +327,9 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
     AppLogController.instance.record('MESSAGE', 'Send button pressed', level: AppLogLevel.info);
     if (_isSending) return;
     final text = _messageController.text;
-    if (text.trim().isEmpty) { _showMessage('Write a message first.'); return; }
-    if (Platform.isAndroid && await FlutterForegroundTask.checkNotificationPermission() != NotificationPermission.granted) {
-      _showMessage('Notification permission is required for messaging.');
-      return;
-    }
+    if (text.trim().isEmpty) { _showMessage(_tr('Write a message first.')); return; }
     final destination = ChatStore.instance.selectedPeerAddress ?? _selectedPeer?.address ?? _manualAddress ?? _destinationController.text.trim();
-    if (destination.isEmpty) { _showMessage('Select an online receiver first.'); return; }
+    if (destination.isEmpty) { _showMessage(_tr('Select an online receiver first.')); return; }
     setState(() { _isSending = true; _cancelRequested = false; });
     final outgoingMessage = _addChatMessage(text, isOutgoing: true);
     try {
@@ -455,12 +338,13 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
       if (_messageController.text == text) _messageController.clear();
       _markChatMessageDelivered(outgoingMessage);
       AppLogController.instance.record('MESSAGE', 'Message stored by receiver and delivery confirmed', level: AppLogLevel.success);
-      _showMessage('Message sent.');
+      _showMessage(_tr('Message sent.'));
+      await MessageSound.playSent();
     } catch (error) {
       AppLogController.instance.record('MESSAGE', 'Message delivery failed. Reason: $error', level: AppLogLevel.error);
       _removeChatMessage(outgoingMessage);
       widget.alerts.add(TransferAlert(fileName: 'Message to $destination — failed', status: TransferAlertStatus.failed));
-      if (mounted) _showMessage('Message could not be delivered: $error');
+      if (mounted) _showMessage('${_tr('Message could not be delivered: ')}$error');
     } finally { if (mounted) setState(() => _isSending = false); }
   }
 
@@ -502,7 +386,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
     } catch (error) {
       AppLogController.instance.record('SEND', 'File send setup failed. Reason: $error', level: AppLogLevel.error);
       if (mounted && !_cancelRequested) {
-        _showMessage('Could not send files: $error');
+        _showMessage('${_tr('Could not send files: ')}$error');
       }
     } finally {
       if (_cancelRequested && !_sessionStarted) {
@@ -519,9 +403,10 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _transferFiles(PairingInvite invitation) async {
+    final selectedBatch = List<PlatformFile>.of(_selectedFiles);
     final sourceFiles = <File>[];
     final entries = <TransferFileEntry>[];
-    for (final selected in _selectedFiles) {
+    for (final selected in selectedBatch) {
       final path = selected.path;
       if (path == null) {
         throw FileSystemException(
@@ -579,11 +464,19 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
       },
     );
     if (!mounted) return;
-    _showMessage(switch (outcome) {
+    if (outcome == SenderSessionOutcome.completed) {
+      setState(() => removeSuccessfullySentFiles(_selectedFiles, selectedBatch));
+      AppLogController.instance.record(
+        'SEND',
+        'Removed ${selectedBatch.length} successfully sent file(s) from the Send selection',
+        level: AppLogLevel.success,
+      );
+    }
+    _showMessage(_tr(switch (outcome) {
       SenderSessionOutcome.completed => 'Files sent.',
       SenderSessionOutcome.rejected => 'The receiver rejected this batch.',
       SenderSessionOutcome.cancelled => 'Transfer cancelled.',
-    });
+    }));
   }
 
   static const MethodChannel _networkChannel =
@@ -598,12 +491,14 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
           : await const LocalPeerDiscoveryClient().discoverMessagePeers(
               timeout: const Duration(milliseconds: 1400),
             );
-      devices.addAll(peers.map((peer) => peer.address));
+      _onlineAppDevices = peers.map((peer) => peer.address).toSet();
+      devices.addAll(_onlineAppDevices);
       AppLogController.instance.record(
         'NETWORK',
         'UDP app discovery found ${peers.length} Local WiFi Drop receiver(s)',
       );
     } catch (error) {
+      _onlineAppDevices = {};
       AppLogController.instance.record(
         'NETWORK',
         'UDP app discovery failed: $error',
@@ -657,7 +552,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
       devices = await _scanNetworkDeviceIps();
     } catch (error) {
       AppLogController.instance.record('NETWORK', 'Wi-Fi device scan failed: $error', level: AppLogLevel.error);
-      if (mounted) _showMessage('Wi-Fi device scan failed: $error');
+      if (mounted) _showMessage('${_tr('Wi-Fi device scan failed: ')}$error');
     } finally {
       if (mounted) setState(() => _isDiscovering = false);
     }
@@ -677,7 +572,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
       devices = await _scanNetworkDeviceIps();
     } catch (error) {
       AppLogController.instance.record('NETWORK', 'Wi-Fi device scan failed: $error', level: AppLogLevel.error);
-      if (mounted) _showMessage('Wi-Fi device scan failed: $error');
+      if (mounted) _showMessage('${_tr('Wi-Fi device scan failed: ')}$error');
     } finally {
       if (mounted) {
         setState(() {
@@ -735,15 +630,15 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                           dense: true,
                           title: Row(
                             children: [
-                              const Expanded(
+                              Expanded(
                                 child: Text(
-                                  'Devices found on this network',
-                                  style: TextStyle(fontWeight: FontWeight.w700),
+                                  _tr('Devices found on this network'),
+                                  style: const TextStyle(fontWeight: FontWeight.w700),
                                 ),
                               ),
                               IconButton(
                                 key: const ValueKey('refresh-network-devices'),
-                                tooltip: 'Refresh devices',
+                                tooltip: _tr('Refresh devices'),
                                 onPressed: _isDiscovering ? null : _refreshPeerDropdown,
                                 constraints: const BoxConstraints.tightFor(
                                   width: 32,
@@ -763,8 +658,8 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                           ),
                           subtitle: Text(
                             _discoveredDevices.isEmpty
-                                ? 'No responding devices found.'
-                                : '${_discoveredDevices.length} responding device(s)',
+                                ? _tr('No responding devices found.')
+                                : '${_discoveredDevices.length} ${_tr('responding device(s)')}',
                           ),
                         ),
                         for (final address in _discoveredDevices)
@@ -774,14 +669,28 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                               Icons.devices,
                               color: Color(0xFF159447),
                             ),
-                            title: Text(
-                              address,
-                              style: const TextStyle(
-                                color: Color(0xFF16452A),
-                                fontWeight: FontWeight.w600,
-                              ),
+                            title: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    address,
+                                    style: const TextStyle(
+                                      color: Color(0xFF16452A),
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                                if (_onlineAppDevices.contains(address))
+                                  Text(
+                                    _tr('Online'),
+                                    style: const TextStyle(
+                                      color: Color(0xFF20C65A),
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                              ],
                             ),
-                            subtitle: const Text('Device on this Wi-Fi'),
+                            subtitle: Text(_tr('Device on this Wi-Fi')),
                             onTap: () {
                               _closePeerDropdown();
                               AppLogController.instance.record('NETWORK', 'Destination device selected: $address');
@@ -797,7 +706,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                         ListTile(
                           dense: true,
                           leading: const Icon(Icons.edit, color: Color(0xFF159447)),
-                          title: const Text('Enter IP manually'),
+                          title: Text(_tr('Enter IP manually')),
                           onTap: () {
                             _closePeerDropdown();
                             _enterManualIp();
@@ -828,24 +737,24 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
     final entered = await showDialog<String>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('Enter device IP'),
+        title: Text(_tr('Enter device IP')),
         content: TextField(
           controller: controller,
           autofocus: true,
           keyboardType: TextInputType.url,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             hintText: '192.168.1.25',
-            labelText: 'Private IPv4 address',
+            labelText: _tr('Private IPv4 address'),
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
+            child: Text(_tr('Cancel')),
           ),
           FilledButton(
             onPressed: () => Navigator.of(dialogContext).pop(controller.text),
-            child: const Text('Use IP'),
+            child: Text(_tr('Use IP')),
           ),
         ],
       ),
@@ -855,7 +764,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
 
     final address = InternetAddress.tryParse(entered.trim());
     if (address == null || !_isSupportedPrivateIpv4(address)) {
-      _showMessage('Enter a valid private IPv4 address.');
+      _showMessage(_tr('Enter a valid private IPv4 address.'));
       return;
     }
     final peers = await const LocalPeerDiscoveryClient().discoverMessagePeers(
@@ -864,7 +773,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
     );
     if (!mounted) return;
     if (!peers.any((peer) => peer.address == address.address)) {
-      _showMessage('This IP has no online Local WiFi Drop message receiver.');
+      _showMessage(_tr('This IP has no online Local WiFi Drop message receiver.'));
       return;
     }
     AppLogController.instance.record('NETWORK', 'Verified online message receiver selected: ${address.address}');
@@ -898,13 +807,15 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          const Positioned.fill(child: MatrixRainBackground()),
+          const Positioned.fill(child: ColoredBox(color: Colors.black)),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
               child: Column(
                 children: [
                   SendHeader(
+                    key: ValueKey('send-header-$_headerRevision'),
+                    alertButtonKey: _alertButtonKey,
                     logPanelBottomKey: _bottomSendButtonAnchorKey,
                     alertController: widget.alerts,
                     alertsPanel: TransferHistoryPanel(controller: widget.alerts),
@@ -927,9 +838,8 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                     child: ListView(
                       padding: EdgeInsets.zero,
                       children: [
-                        _unencryptedWarning(),
-                        const SizedBox(height: 10),
                         _sendCard(
+                          backgroundColor: Colors.black,
                           child: CompositedTransformTarget(
                             key: _peerPickerFieldKey,
                             link: _peerPickerLayerLink,
@@ -937,9 +847,11 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                             key: const ValueKey('send-destination-picker'),
                             borderRadius: BorderRadius.circular(10),
                             onTap: _openPeerPicker,
-                            child: InputDecorator(
+                            child: Directionality(
+                              textDirection: TextDirection.ltr,
+                              child: InputDecorator(
                               decoration: InputDecoration(
-                                hintText: 'Select a device on this Wi-Fi',
+                                hintText: _tr('Select a device on this Wi-Fi'),
                                 prefixIcon: const Icon(Icons.wifi, color: Color(0xFF159447)),
                                 suffixIcon: _isDiscovering
                                     ? const Padding(
@@ -950,20 +862,30 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                           child: CircularProgressIndicator(strokeWidth: 2),
                                         ),
                                       )
-                                    : const Icon(Icons.arrow_drop_down),
+                                    : const Icon(Icons.arrow_drop_down, color: Colors.black),
                                 filled: true,
-                                fillColor: const Color(0xFFF3F7F4),
-                                border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(11),
-                                  borderSide: BorderSide.none,
+                                fillColor: Colors.white,
+                                border: const OutlineInputBorder(
+                                  borderSide: BorderSide(color: Colors.black, width: 2),
+                                ),
+                                enabledBorder: const OutlineInputBorder(
+                                  borderSide: BorderSide(color: Colors.black, width: 2),
+                                ),
+                                focusedBorder: const OutlineInputBorder(
+                                  borderSide: BorderSide(color: Colors.black, width: 2),
                                 ),
                               ),
                               child: Text(
                                 _destinationController.text.isNotEmpty
                                     ? _destinationController.text
-                                    : (_isLoadingDeviceIp ? 'Detecting this device…' : 'Device IP unavailable'),
-                                style: const TextStyle(color: Color(0xFF16452A)),
+                                    : (_isLoadingDeviceIp ? _tr('Detecting this device…') : _tr('Device IP unavailable')),
+                                style: const TextStyle(color: Colors.black),
+                                textDirection: TextDirection.ltr,
+                                maxLines: 1,
+                                softWrap: false,
+                                overflow: TextOverflow.ellipsis,
                               ),
+                            ),
                             ),
                             ),
                           ),
@@ -982,7 +904,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                         child: CircularProgressIndicator(strokeWidth: 2),
                                       )
                                     : const Icon(Icons.add),
-                                label: Text(_isPicking ? 'Opening files…' : 'Choose File'),
+                                label: Text(_tr(_isPicking ? 'Opening files…' : 'Choose File')),
                                 style: OutlinedButton.styleFrom(
                                   foregroundColor: const Color(0xFF087A35),
                                   side: const BorderSide(color: Color(0xFF20C65A)),
@@ -995,11 +917,9 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                   height: 168,
                                   child: ListView.builder(
                                     key: const ValueKey('selected-files-scroll'),
-                                    reverse: true,
                                     padding: EdgeInsets.zero,
                                     itemCount: _selectedFiles.length,
-                                    itemBuilder: (context, visibleIndex) {
-                                      final index = _selectedFiles.length - 1 - visibleIndex;
+                                    itemBuilder: (context, index) {
                                       final file = _selectedFiles[index];
                                       return Padding(
                                         padding: const EdgeInsets.only(bottom: 6),
@@ -1031,7 +951,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                                 ),
                                               ),
                                               IconButton(
-                                                tooltip: 'Remove file',
+                                                tooltip: _tr('Remove file'),
                                                 onPressed: _isSending
                                                     ? null
                                                     : () {
@@ -1053,7 +973,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                 Align(
                                   alignment: Alignment.centerRight,
                                   child: Text(
-                                    '${_selectedFiles.length} file(s) · ${_formatBytes(_knownTotalBytes)}',
+                                    '${_selectedFiles.length} ${_tr('file(s)')} · ${_formatBytes(_knownTotalBytes)}',
                                     style: const TextStyle(color: Color(0xFF718078), fontSize: 12),
                                   ),
                                 ),
@@ -1066,11 +986,11 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Row(
+                              Row(
                                 children: [
-                                  Icon(Icons.message_outlined, color: Color(0xFF159447)),
-                                  SizedBox(width: 9),
-                                  Text('Message', style: TextStyle(
+                                  const Icon(Icons.message_outlined, color: Color(0xFF159447)),
+                                  const SizedBox(width: 9),
+                                  Text(_tr('Message'), style: const TextStyle(
                                     color: Color(0xFF16452A),
                                     fontWeight: FontWeight.w700,
                                   )),
@@ -1087,11 +1007,13 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                 key: const ValueKey('send-message-field'),
                                 controller: _messageController,
                                 style: const TextStyle(color: Colors.black),
+                                textDirection: AppLanguageController.instance.isPersian ? TextDirection.rtl : TextDirection.ltr,
+                                textAlign: AppLanguageController.instance.isPersian ? TextAlign.right : TextAlign.left,
                                 onChanged: (_) => setState(() {}),
                                 minLines: 3,
                                 maxLines: 3,
                                 decoration: InputDecoration(
-                                  hintText: 'Write message',
+                                  hintText: _tr('Write message'),
                                   filled: true,
                                   fillColor: const Color(0xFFF3F7F4),
                                   border: OutlineInputBorder(
@@ -1102,7 +1024,9 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                 ),
                               ),
                               const SizedBox(height: 6),
-                              Row(
+                              Directionality(
+                                textDirection: AppLanguageController.instance.isPersian ? TextDirection.rtl : TextDirection.ltr,
+                                child: Row(
                                 children: [
                                   Expanded(
                                     child: SizedBox(
@@ -1124,7 +1048,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                           visualDensity: VisualDensity.compact,
                                         ),
-                                        child: const Text('Send'),
+                                        child: Text(_tr('Send')),
                                       ),
                                     ),
                                   ),
@@ -1145,11 +1069,12 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                           visualDensity: VisualDensity.compact,
                                         ),
-                                        child: const Text('Paste'),
+                                        child: Text(_tr('Paste')),
                                       ),
                                     ),
                                   ),
                                 ],
+                              ),
                               ),
                             ],
                           ),
@@ -1161,10 +1086,10 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                             children: [
                               Row(
                                 children: [
-                                  const Expanded(
+                                  Expanded(
                                     child: Text(
-                                      'Sending Progress',
-                                      style: TextStyle(
+                                      _tr('Sending Progress'),
+                                      style: const TextStyle(
                                         color: Color(0xFF16452A),
                                         fontWeight: FontWeight.w700,
                                       ),
@@ -1193,7 +1118,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                               Text(
                                 _totalSendBytes > 0
                                     ? '${_formatBytes(_sentBytes)} / ${_formatBytes(_totalSendBytes)}'
-                                    : 'Ready to send',
+                                    : _tr('Ready to send'),
                                 style: const TextStyle(color: Color(0xFF718078), fontSize: 12),
                               ),
                             ],
@@ -1218,7 +1143,7 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
                                     ? _sendSelectedDestination
                                     : null),
                             icon: Icon(_isSending ? Icons.close : Icons.send),
-                            label: Text(_isSending ? 'Cancel' : 'Send'),
+                            label: Text(_tr(_isSending ? 'Cancel' : 'Send')),
                             style: FilledButton.styleFrom(
                               backgroundColor: const Color(0xFF20C65A),
                               foregroundColor: const Color(0xFF05230F),
@@ -1241,22 +1166,11 @@ class _SendScreenState extends State<SendScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _unencryptedWarning() => Container(
-        width: double.infinity,
-        margin: const EdgeInsets.only(bottom: 2),
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(color: const Color(0xFFFFF3CD), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFE7C66A))),
-        child: const Text(
-          'This app has no encryption to keep it lightweight. Do not send important or sensitive messages or files.',
-          style: TextStyle(color: Color(0xFF6B4F00), fontSize: 12, fontWeight: FontWeight.w600),
-        ),
-      );
-
-  Widget _sendCard({required Widget child}) {
+  Widget _sendCard({required Widget child, Color backgroundColor = Colors.white}) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: backgroundColor,
         borderRadius: BorderRadius.circular(14),
         boxShadow: const [
           BoxShadow(color: Color(0x33000000), blurRadius: 8, offset: Offset(0, 3)),
@@ -1278,21 +1192,23 @@ class ReceiveScreen extends StatefulWidget {
 
 class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserver {
   TcpTransferServer? _server;
+  final GlobalKey _alertButtonKey = GlobalKey(debugLabel: 'receive-alert-button');
+  void _onLanguageChanged() { if (mounted) setState(() {}); }
   LocalPeerDiscoveryResponder? _discoveryResponder;
   TransferCancellation? _cancellation;
   String? _destinationPath;
   bool _starting = false;
   String _senderAddress = 'From';
   bool _cancelRequested = false;
-  bool _receivingTransfer = false;
-  bool _approvalDialogOpen = false;
-  int _receiveResetGeneration = 0;
+  bool _receiverActive = false;
+  Completer<bool>? _pendingApproval;
+  String? _incomingFileName;
   DateTime _lastReceiveProgressUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   DateTime _lastReceiveLogUpdate = DateTime.fromMillisecondsSinceEpoch(0);
   int _receivedBytes = 0;
   int _totalBytes = 0;
-  List<File> _receivedFiles = [];
-  bool _receivedFilesExpanded = false;
+  static final List<File> _receivedFiles = [];
+  static final Map<String, String> _publishedFileUris = {};
   File? _selectedReceivedFile;
   final TextEditingController _receivedMessageController = TextEditingController();
   List<ChatMessage> get _chatMessages => ChatStore.instance.messages;
@@ -1310,6 +1226,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    AppLanguageController.instance.language.addListener(_onLanguageChanged);
     ChatStore.instance.addListener(_onChatStoreChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) unawaited(_startReceiving());
@@ -1318,7 +1235,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed && _starting) {
+    if (state == AppLifecycleState.detached && _starting) {
       unawaited(_cancelReceiving());
     }
     if (state == AppLifecycleState.resumed) {
@@ -1346,9 +1263,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    AppLanguageController.instance.language.removeListener(_onLanguageChanged);
     ChatStore.instance.removeListener(_onChatStoreChanged);
     _cancelRequested = true;
     _cancellation?.cancel();
+    final pending = _pendingApproval;
+    if (pending != null && !pending.isCompleted) pending.complete(false);
     final server = _server;
     if (server != null && !server.isClosed) unawaited(server.close());
     final discovery = _discoveryResponder;
@@ -1358,21 +1278,18 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   }
 
   Future<void> _startReceiving() async {
-    _receiveResetGeneration++;
     AppLogController.instance.record(
       'RECEIVE',
       'Receive page listener startup requested',
     );
-    if (_starting) return;
+    if (_receiverActive || _starting) return;
     setState(() {
       _starting = true;
       _senderAddress = 'From';
+      _incomingFileName = null;
       _cancelRequested = false;
       _receivedBytes = 0;
       _totalBytes = 0;
-      _receivedFiles = [];
-      _receivedFilesExpanded = false;
-      _selectedReceivedFile = null;
       _receivedMessageController.clear();
       _lastReceiveProgressUpdate = DateTime.fromMillisecondsSinceEpoch(0);
     });
@@ -1392,6 +1309,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
 
           server = await TcpTransferServer.bind(address: address);
           _server = server;
+          _receiverActive = true;
           final invitation = ReceiverInvitation.create(
             host: address.address,
             port: server.port,
@@ -1429,7 +1347,6 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
             timeout: timeout,
           );
           acceptedConnection = connection;
-          _receivingTransfer = true;
           await _discoveryResponder?.close();
           _discoveryResponder = null;
           if (!mounted || _cancelRequested) {
@@ -1500,7 +1417,8 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
             finalizeFiles: (files) async {
               if (!Platform.isAndroid) return;
               for (final file in files) {
-                await PublicStorageService.instance.publishReceivedFile(file);
+                final publishedUri = await PublicStorageService.instance.publishReceivedFile(file);
+                _publishedFileUris[file.path] = publishedUri;
                 AppLogController.instance.record(
                   'STORAGE',
                   'Published received file to Documents/Local Wi-Fi Drop/Received: ${file.uri.pathSegments.last}',
@@ -1511,27 +1429,18 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
           );
           if (!mounted) break;
           setState(() {
-            _receivedFiles = List<File>.unmodifiable(result.files);
+            for (final file in result.files) {
+              _receivedFiles.removeWhere((existing) => existing.path == file.path);
+              _receivedFiles.add(file);
+            }
+            if (_receivedFiles.length > 3) {
+              _receivedFiles.removeRange(0, _receivedFiles.length - 3);
+            }
+            if (result.files.isNotEmpty) {
+              _selectedReceivedFile = result.files.last;
+            }
+            _incomingFileName = null;
           });
-          if (result.outcome == ReceiverSessionOutcome.completed) {
-            final resetGeneration = ++_receiveResetGeneration;
-            Future<void>.delayed(const Duration(seconds: 10), () {
-              if (!mounted ||
-                  _receivingTransfer ||
-                  _receiveResetGeneration != resetGeneration) {
-                return;
-              }
-              setState(() {
-                _senderAddress = 'From';
-                _receivedBytes = 0;
-                _totalBytes = 0;
-                _receivedFiles = [];
-                _receivedFilesExpanded = false;
-                _selectedReceivedFile = null;
-                _destinationPath = null;
-              });
-            });
-          }
         } on TimeoutException {
           if (_cancelRequested || !mounted) break;
           AppLogController.instance.record(
@@ -1548,7 +1457,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
           );
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Could not receive files: $error')),
+              SnackBar(content: Text('${_tr('Could not receive files: ')}$error')),
             );
           }
           if (!listenerReady) break;
@@ -1561,7 +1470,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
             await server.close();
           }
           if (identical(_server, server)) _server = null;
-          _receivingTransfer = false;
+          _receiverActive = false;
           await _discoveryResponder?.close();
           _discoveryResponder = null;
           _cancellation = null;
@@ -1572,7 +1481,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
         }
       }
     } finally {
-      _receivingTransfer = false;
+      _receiverActive = false;
       _server = null;
       await _discoveryResponder?.close();
       _discoveryResponder = null;
@@ -1590,14 +1499,10 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     final destination = ChatStore.instance.selectedPeerAddress ?? ChatStore.instance.lastIncomingSenderAddress;
     final text = _receivedMessageController.text;
     if (destination == null || destination.isEmpty) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('No message sender is available to reply to.')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_tr('No message sender is available to reply to.'))));
       return;
     }
     if (text.trim().isEmpty || _isSendingReply) return;
-    if (Platform.isAndroid && await FlutterForegroundTask.checkNotificationPermission() != NotificationPermission.granted) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Notification permission is required for messaging.')));
-      return;
-    }
     setState(() => _isSendingReply = true);
     final outgoingMessage = _addChatMessage(text, isOutgoing: true);
     try {
@@ -1606,12 +1511,13 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
         if (_receivedMessageController.text == text) _receivedMessageController.clear();
         _markChatMessageDelivered(outgoingMessage);
         AppLogController.instance.record('MESSAGE', 'Receive-screen reply delivery confirmed by receiver', level: AppLogLevel.success);
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Message sent.')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_tr('Message sent.'))));
+        await MessageSound.playSent();
       }
     } catch (error) {
       AppLogController.instance.record('MESSAGE', 'Receive-screen reply delivery failed: $error', level: AppLogLevel.error);
       _removeChatMessage(outgoingMessage);
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Could not send message: $error')));
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${_tr('Could not send message: ')}$error')));
     } finally { if (mounted) setState(() => _isSendingReply = false); }
   }
 
@@ -1623,7 +1529,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     if (text == null || text.isEmpty) {
       AppLogController.instance.record('UI', 'Paste reply failed: clipboard is empty', level: AppLogLevel.warning);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Clipboard is empty.')),
+        SnackBar(content: Text(_tr('Clipboard is empty.'))),
       );
       return;
     }
@@ -1637,68 +1543,42 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   }
 
   Future<bool> _confirmIncoming(TransferManifest manifest) async {
-    AppLogController.instance.record('RECEIVE', 'Incoming batch approval requested: ${manifest.files.map((file) => file.name).join(', ')}');
+    AppLogController.instance.record(
+      'RECEIVE',
+      'Incoming batch approval requested: ${manifest.files.map((file) => file.name).join(', ')}',
+    );
     if (!mounted) return false;
-    _approvalDialogOpen = true;
+    final completer = Completer<bool>();
+    setState(() {
+      _incomingFileName = manifest.files.length == 1
+          ? manifest.files.single.name
+          : '${manifest.files.first.name} (+${manifest.files.length - 1} more)';
+      _pendingApproval = completer;
+    });
     try {
-      final accepted = await showDialog<bool>(
-        context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Incoming files'),
-        content: SizedBox(
-          width: 360,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('${manifest.files.length} file(s) · ${_formatBytes(manifest.totalBytes)}'),
-              const SizedBox(height: 12),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 220),
-                child: ListView(
-                  shrinkWrap: true,
-                  children: [
-                    for (final file in manifest.files)
-                      ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text(_formatBytes(file.size)),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text('Save to: ${Platform.isAndroid ? 'Documents/Local Wi-Fi Drop/Received' : _destinationPath}'),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('Reject'),
-          ),
-          TextButton(
-            onPressed: () {
-              _cancellation?.cancel();
-              Navigator.of(dialogContext).pop(false);
-            },
-            child: const Text('Cancel transfer'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(dialogContext).pop(true),
-            child: const Text('Accept files'),
-          ),
-        ],
-      ),
+      final approved = await completer.future;
+      AppLogController.instance.record(
+        'RECEIVE',
+        approved ? 'Incoming file batch accepted' : 'Incoming file batch rejected',
+        level: approved ? AppLogLevel.success : AppLogLevel.warning,
       );
-      final approved = accepted ?? false;
-      AppLogController.instance.record('RECEIVE', approved ? 'Incoming file batch accepted' : 'Incoming file batch rejected/cancelled', level: approved ? AppLogLevel.success : AppLogLevel.warning);
       return approved;
     } finally {
-      _approvalDialogOpen = false;
+      if (identical(_pendingApproval, completer)) {
+        _pendingApproval = null;
+        if (mounted) {
+          setState(() {
+            _incomingFileName = null;
+          });
+        }
+      }
     }
+  }
+
+  void _resolveIncomingApproval(bool accepted) {
+    final pending = _pendingApproval;
+    if (pending == null || pending.isCompleted) return;
+    pending.complete(accepted);
   }
 
   Future<void> _cancelReceiving() async {
@@ -1706,9 +1586,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     if (!_starting) return;
     _cancelRequested = true;
     _cancellation?.cancel();
-    if (_approvalDialogOpen && mounted) {
-      unawaited(Navigator.of(context, rootNavigator: true).maybePop());
-    }
+    _resolveIncomingApproval(false);
     await _discoveryResponder?.close();
     _discoveryResponder = null;
     final server = _server;
@@ -1729,7 +1607,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
       } catch (error) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Could not open the received files folder: $error')),
+            SnackBar(content: Text('${_tr('Could not open the received files folder: ')}$error')),
           );
         }
       }
@@ -1739,18 +1617,22 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   }
 
   Future<void> _deleteSelectedReceivedFile() async {
-    final file = _selectedReceivedFile;
+    final file = _selectedReceivedFile ?? (_receivedFiles.isEmpty ? null : _receivedFiles.last);
     if (file == null) return;
     try {
+      final publishedUri = _publishedFileUris.remove(file.path);
+      await PublicStorageService.instance.deleteReceivedFile(
+        file: file,
+        publishedUri: publishedUri,
+      );
       if (!mounted) return;
       setState(() {
-        _receivedFiles = _receivedFiles.where((item) => item.path != file.path).toList();
-        _selectedReceivedFile = null;
-        if (_receivedFiles.isEmpty) _receivedFilesExpanded = false;
+        _receivedFiles.removeWhere((item) => item.path == file.path);
+        _selectedReceivedFile = _receivedFiles.isEmpty ? null : _receivedFiles.last;
       });
       AppLogController.instance.record(
         'FILE',
-        'Removed received file from app list; stored file was kept: ${file.path}',
+        'Deleted received file: ${file.path}',
         level: AppLogLevel.success,
       );
     } catch (error) {
@@ -1761,7 +1643,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
       );
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not delete file: $error')),
+          SnackBar(content: Text('${_tr('Could not delete file: ')}$error')),
         );
       }
     }
@@ -1776,7 +1658,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          const Positioned.fill(child: MatrixRainBackground()),
+          const Positioned.fill(child: ColoredBox(color: Colors.black)),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 14),
@@ -1784,6 +1666,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                 children: [
                   SendHeader(
                     isReceive: true,
+                    alertButtonKey: _alertButtonKey,
                     alertController: widget.alerts,
                     onSendTap: () {
                       AppLogController.instance.record('UI', 'Send tab pressed');
@@ -1805,165 +1688,145 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                     child: ListView(
                       padding: EdgeInsets.zero,
                       children: [
-                        _unencryptedWarning(),
-                        const SizedBox(height: 10),
                         _receiveCard(
-                          child: SizedBox(
-                            height: 42,
-                            child: InkWell(
-                              key: const ValueKey('receive-source-selector'),
-                              borderRadius: BorderRadius.circular(9),
-                              onTap: _starting ? _cancelReceiving : _startReceiving,
-                              child: Center(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Text(
+                                _tr('From'),
+                                style: const TextStyle(
+                                  color: Color(0xFF16452A),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Container(
+                                key: const ValueKey('receive-source-selector'),
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF3F6F4),
+                                  border: Border.all(color: const Color(0xFF16452A)),
+                                  borderRadius: BorderRadius.circular(9),
+                                ),
                                 child: Text(
-                                  _senderAddress,
+                                  _senderAddress == 'From' ? _tr('Waiting for sender IP') : _senderAddress,
                                   key: const ValueKey('receive-sender-address'),
-                                  textAlign: TextAlign.center,
                                   style: const TextStyle(
                                     color: Color(0xFF16452A),
                                     fontWeight: FontWeight.w700,
-                                    fontSize: 14,
                                   ),
                                 ),
                               ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-                        _receiveCard(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Row(
-                                children: [
-                                  Icon(Icons.insert_drive_file_outlined, color: Color(0xFF159447)),
-                                  SizedBox(width: 10),
-                                  Text('Received Files', style: TextStyle(fontWeight: FontWeight.w700)),
-                                ],
+                              const SizedBox(height: 10),
+                              Text(
+                                _tr('File Name'),
+                                style: const TextStyle(
+                                  color: Color(0xFF16452A),
+                                  fontWeight: FontWeight.w700,
+                                ),
                               ),
-                              const SizedBox(height: 8),
-                              AnimatedSize(
-                                duration: const Duration(milliseconds: 220),
-                                curve: Curves.easeInOut,
-                                alignment: Alignment.topCenter,
-                                child: Column(
-                                  key: const ValueKey('received-files-list'),
-                                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                                  children: [
-                                    Material(
-                                      color: const Color(0xFFF3F6F4),
-                                      borderRadius: BorderRadius.circular(10),
-                                      child: InkWell(
-                                        borderRadius: BorderRadius.circular(10),
-                                        onTap: _receivedFiles.length > 1
-                                            ? () {
-                                                final expanded = !_receivedFilesExpanded;
-                                                AppLogController.instance.record(
-                                                  'UI',
-                                                  expanded
-                                                      ? 'Received file list expanded'
-                                                      : 'Received file list collapsed',
-                                                );
-                                                setState(() => _receivedFilesExpanded = expanded);
-                                              }
-                                            : null,
-                                        child: SizedBox(
-                                          height: 56,
-                                          child: Padding(
-                                            padding: const EdgeInsets.symmetric(horizontal: 10),
-                                            child: Row(
-                                              children: [
-                                                Expanded(
-                                                  child: Text(
-                                                    (_selectedReceivedFile ??
-                                                            (_receivedFiles.isEmpty ? null : _receivedFiles.last))
-                                                        ?.uri.pathSegments.last ??
-                                                        '',
-                                                    maxLines: 1,
-                                                    overflow: TextOverflow.ellipsis,
-                                                    style: const TextStyle(color: Color(0xFF16452A)),
-                                                  ),
-                                                ),
-                                                if (_receivedFiles.length > 1) ...[
-                                                  const SizedBox(width: 8),
-                                                  Icon(
-                                                    _receivedFilesExpanded
-                                                        ? Icons.keyboard_arrow_up
-                                                        : Icons.keyboard_arrow_down,
-                                                    color: const Color(0xFF087A35),
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                    if (_receivedFilesExpanded && _receivedFiles.length > 1)
-                                      Container(
-                                        margin: const EdgeInsets.only(top: 4),
-                                        constraints: const BoxConstraints(maxHeight: 180),
-                                        decoration: BoxDecoration(
-                                          color: const Color(0xFFF3F6F4),
-                                          borderRadius: BorderRadius.circular(10),
-                                        ),
-                                        child: ListView.builder(
-                                          shrinkWrap: true,
-                                          padding: EdgeInsets.zero,
-                                          itemCount: _receivedFiles.length,
-                                          itemBuilder: (context, index) {
-                                            final file = _receivedFiles[
-                                                _receivedFiles.length - 1 - index];
-                                            final isSelected =
-                                                _selectedReceivedFile?.path == file.path;
-                                            return ListTile(
-                                              dense: true,
-                                              visualDensity: VisualDensity.compact,
-                                              selected: isSelected,
-                                              selectedTileColor: const Color(0xFFB9EBC9),
-                                              onTap: () {
-                                                AppLogController.instance.record(
-                                                  'FILE',
-                                                  'Selected received file: ${file.uri.pathSegments.last}',
-                                                );
-                                                setState(() => _selectedReceivedFile = file);
-                                              },
-                                              leading: Icon(
-                                                isSelected
-                                                    ? Icons.check_circle
-                                                    : Icons.insert_drive_file_outlined,
-                                                color: const Color(0xFF159447),
-                                                size: 20,
-                                              ),
-                                              title: Text(
-                                                file.uri.pathSegments.last,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: TextStyle(
-                                                  color: isSelected
-                                                      ? const Color(0xFF087A35)
-                                                      : const Color(0xFF16452A),
-                                                  fontSize: 13,
-                                                  fontWeight: isSelected
-                                                      ? FontWeight.w700
-                                                      : FontWeight.normal,
-                                                ),
-                                              ),
-                                            );
-                                          },
-                                        ),
-                                      ),
-                                  ],
+                              const SizedBox(height: 6),
+                              Container(
+                                key: const ValueKey('receive-incoming-file-name'),
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF3F6F4),
+                                  border: Border.all(color: const Color(0xFF16452A)),
+                                  borderRadius: BorderRadius.circular(9),
+                                ),
+                                child: Text(
+                                  _incomingFileName ?? _tr('No incoming file'),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(color: Color(0xFF16452A)),
                                 ),
                               ),
                               const SizedBox(height: 10),
                               Row(
                                 children: [
                                   Expanded(
+                                    child: FilledButton(
+                                      key: const ValueKey('receive-accept-file'),
+                                      onPressed: _pendingApproval == null
+                                          ? null
+                                          : () => _resolveIncomingApproval(true),
+                                      style: FilledButton.styleFrom(
+                                        backgroundColor: const Color(0xFF159447),
+                                        foregroundColor: Colors.white,
+                                      ),
+                                      child: Text(_tr('Accept')),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: OutlinedButton(
+                                      key: const ValueKey('receive-reject-file'),
+                                      onPressed: _pendingApproval == null
+                                          ? null
+                                          : () => _resolveIncomingApproval(false),
+                                      style: OutlinedButton.styleFrom(
+                                        foregroundColor: const Color(0xFFB42318),
+                                        side: const BorderSide(color: Color(0xFFB42318)),
+                                      ),
+                                      child: Text(_tr('Reject')),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const Divider(height: 22),
+                              Text(
+                                _tr('Received Files · Last 3'),
+                                style: const TextStyle(
+                                  color: Color(0xFF16452A),
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              if (_receivedFiles.isEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 12),
+                                  child: Text(
+                                    _tr('No received files'),
+                                    style: const TextStyle(color: Color(0xFF718078)),
+                                  ),
+                                )
+                              else
+                                for (final file in _receivedFiles.reversed)
+                                  ListTile(
+                                    key: ValueKey('received-file-${file.path}'),
+                                    dense: true,
+                                    visualDensity: VisualDensity.compact,
+                                    contentPadding: EdgeInsets.zero,
+                                    selected: _selectedReceivedFile?.path == file.path,
+                                    selectedTileColor: const Color(0xFFB9EBC9),
+                                    onTap: () => setState(() => _selectedReceivedFile = file),
+                                    leading: Icon(
+                                      _selectedReceivedFile?.path == file.path
+                                          ? Icons.check_circle
+                                          : Icons.insert_drive_file_outlined,
+                                      color: const Color(0xFF159447),
+                                      size: 20,
+                                    ),
+                                    title: Text(
+                                      file.uri.pathSegments.last,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Color(0xFF16452A),
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
                                     child: OutlinedButton.icon(
                                       onPressed: _receivedFiles.isEmpty ? null : _openReceivedFile,
                                       icon: const Icon(Icons.folder_open),
-                                      label: const Text('Open'),
+                                      label: Text(_tr('Open')),
                                       style: OutlinedButton.styleFrom(
                                         foregroundColor: const Color(0xFF087A35),
                                       ),
@@ -1972,9 +1835,9 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                                   const SizedBox(width: 8),
                                   Expanded(
                                     child: OutlinedButton.icon(
-                                      onPressed: _selectedReceivedFile == null ? null : _deleteSelectedReceivedFile,
+                                      onPressed: _receivedFiles.isEmpty ? null : _deleteSelectedReceivedFile,
                                       icon: const Icon(Icons.delete_outline),
-                                      label: const Text('Delete'),
+                                      label: Text(_tr('Delete')),
                                       style: OutlinedButton.styleFrom(
                                         foregroundColor: const Color(0xFFB42318),
                                       ),
@@ -1990,11 +1853,11 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              const Row(
+                              Row(
                                 children: [
-                                  Icon(Icons.message_outlined, color: Color(0xFF159447)),
-                                  SizedBox(width: 9),
-                                  Text('Message', style: TextStyle(
+                                  const Icon(Icons.message_outlined, color: Color(0xFF159447)),
+                                  const SizedBox(width: 9),
+                                  Text(_tr('Message'), style: const TextStyle(
                                     color: Color(0xFF16452A),
                                     fontWeight: FontWeight.w700,
                                   )),
@@ -2011,22 +1874,26 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                                 key: const ValueKey('received-message-field'),
                                 controller: _receivedMessageController,
                                 style: const TextStyle(color: Colors.black),
+                                textDirection: AppLanguageController.instance.isPersian ? TextDirection.rtl : TextDirection.ltr,
+                                textAlign: AppLanguageController.instance.isPersian ? TextAlign.right : TextAlign.left,
                                 onChanged: (_) => setState(() {}),
                                 minLines: 3,
                                 maxLines: 3,
-                                decoration: const InputDecoration(
-                                  hintText: 'Write message',
+                                decoration: InputDecoration(
+                                  hintText: _tr('Write message'),
                                   filled: true,
-                                  fillColor: Color(0xFFF3F7F4),
-                                  border: OutlineInputBorder(
+                                  fillColor: const Color(0xFFF3F7F4),
+                                  border: const OutlineInputBorder(
                                     borderSide: BorderSide.none,
                                     borderRadius: BorderRadius.all(Radius.circular(11)),
                                   ),
-                                  contentPadding: EdgeInsets.all(12),
+                                  contentPadding: const EdgeInsets.all(12),
                                 ),
                               ),
                               const SizedBox(height: 6),
-                              Row(
+                              Directionality(
+                                textDirection: AppLanguageController.instance.isPersian ? TextDirection.rtl : TextDirection.ltr,
+                                child: Row(
                                 children: [
                                   Expanded(
                                     child: SizedBox(
@@ -2049,7 +1916,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                           visualDensity: VisualDensity.compact,
                                         ),
-                                        child: const Text('Send'),
+                                        child: Text(_tr('Send')),
                                       ),
                                     ),
                                   ),
@@ -2070,11 +1937,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                                           tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                           visualDensity: VisualDensity.compact,
                                         ),
-                                        child: const Text('Paste'),
+                                        child: Text(_tr('Paste')),
                                       ),
                                     ),
                                   ),
                                 ],
+                              ),
                               ),
                             ],
                           ),
@@ -2088,8 +1956,8 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                                 children: [
                                   const Icon(Icons.downloading, color: Color(0xFF159447)),
                                   const SizedBox(width: 9),
-                                  const Expanded(
-                                    child: Text('Receiving Progress', style: TextStyle(fontWeight: FontWeight.w700)),
+                                  Expanded(
+                                    child: Text(_tr('Receiving Progress'), style: const TextStyle(fontWeight: FontWeight.w700)),
                                   ),
                                   Text('${(progress * 100).round()}%'),
                                 ],
@@ -2111,12 +1979,12 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
                                   Text(
                                     _totalBytes > 0
                                         ? '${_formatBytes(_receivedBytes)} / ${_formatBytes(_totalBytes)}'
-                                        : 'Transferred: -- / --',
+                                        : _tr('Transferred: -- / --'),
                                     style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
                                   ),
-                                  const Text(
-                                    'Elapsed: --:--',
-                                    style: TextStyle(color: Color(0xFF64748B), fontSize: 12),
+                                  Text(
+                                    _tr('Elapsed: --:--'),
+                                    style: const TextStyle(color: Color(0xFF64748B), fontSize: 12),
                                   ),
                                 ],
                               ),
@@ -2137,17 +2005,6 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
     );
   }
 
-  Widget _unencryptedWarning() => Container(
-        width: double.infinity,
-        margin: const EdgeInsets.only(bottom: 2),
-        padding: const EdgeInsets.all(10),
-        decoration: BoxDecoration(color: const Color(0xFFFFF3CD), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFFE7C66A))),
-        child: const Text(
-          'This app has no encryption to keep it lightweight. Do not send important or sensitive messages or files.',
-          style: TextStyle(color: Color(0xFF6B4F00), fontSize: 12, fontWeight: FontWeight.w600),
-        ),
-      );
-
   Widget _receiveCard({required Widget child}) {
     return Container(
       padding: const EdgeInsets.all(14),
@@ -2163,81 +2020,7 @@ class _ReceiveScreenState extends State<ReceiveScreen> with WidgetsBindingObserv
   }
 }
 
-class MatrixRainBackground extends StatefulWidget {
-  const MatrixRainBackground({super.key});
-
-  @override
-  State<MatrixRainBackground> createState() => _MatrixRainBackgroundState();
-}
-
-class _MatrixRainBackgroundState extends State<MatrixRainBackground>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 18),
-  )..repeat();
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) => CustomPaint(
-        painter: _MatrixRainPainter(progress: _controller.value),
-        child: const SizedBox.expand(),
-      ),
-    );
-  }
-}
-
-class _MatrixRainPainter extends CustomPainter {
-  const _MatrixRainPainter({required this.progress});
-
-  final double progress;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final background = Paint()..color = Colors.black;
-    canvas.drawRect(Offset.zero & size, background);
-
-    final random = Random(41);
-    const glyphs = '0123456789';
-    final textPainter = TextPainter(textDirection: TextDirection.ltr);
-    // Narrower column spacing and longer streams create a denser Matrix effect
-    // consistently on both Send and Receive screens.
-    for (var column = 0; column < (size.width / 12).ceil(); column++) {
-      final x = column * 12.0;
-      final start = random.nextDouble() * size.height;
-      final speed = 0.55 + random.nextDouble() * 0.9;
-      final length = 8 + random.nextInt(20);
-      for (var row = 0; row < length; row++) {
-        final y = (start + progress * size.height * speed + row * 15) %
-                (size.height + 30) -
-            15;
-        final glyph = glyphs[random.nextInt(glyphs.length)];
-        textPainter.text = TextSpan(
-          text: glyph,
-          style: TextStyle(
-            color: Color.fromRGBO(30, 220, 90, row == 0 ? 0.62 : 0.22),
-            fontSize: 12,
-            fontWeight: FontWeight.w600,
-          ),
-        );
-        textPainter.layout();
-        textPainter.paint(canvas, Offset(x, y));
-      }
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _MatrixRainPainter oldDelegate) =>
-      oldDelegate.progress != progress;
-}
+String _tr(String value) => AppLanguageController.instance.translate(value);
 
 Future<InternetAddress> _preferredPrivateIpv4Address() async {
   final interfaces = await NetworkInterface.list(

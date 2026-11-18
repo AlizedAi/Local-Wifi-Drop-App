@@ -3,7 +3,6 @@ import 'package:flutter/foundation.dart';
 import 'transfer_alert.dart';
 import 'app_log_controller.dart';
 import 'transfer_alert_history.dart';
-import 'public_storage_service.dart';
 
 /// App-lifetime bridge between transfer sessions and the visible history UI.
 class TransferAlertController extends ChangeNotifier {
@@ -41,7 +40,6 @@ class TransferAlertController extends ChangeNotifier {
     final level = alert.succeeded ? AppLogLevel.success : alert.status == TransferAlertStatus.failed ? AppLogLevel.error : AppLogLevel.warning;
     AppLogController.instance.record(direction, '${alert.fileName}: ${alert.status.name.toUpperCase()}', level: level);
     notifyListeners();
-    _persistHistory();
   }
 
   void addAll(Iterable<TransferAlert> alerts) {
@@ -49,7 +47,6 @@ class TransferAlertController extends ChangeNotifier {
     if (incoming.isNotEmpty) _hasUnreadAlert = true;
     _history.addAll(incoming);
     notifyListeners();
-    _persistHistory();
   }
 
   void clear() {
@@ -59,24 +56,5 @@ class TransferAlertController extends ChangeNotifier {
     _history.clear();
     _hasUnreadAlert = false;
     notifyListeners();
-    _persistHistory();
-  }
-
-  void _persistHistory() {
-    final snapshot = _history.items.map((item) => {
-      'fileName': item.fileName,
-      'status': item.status.name,
-      'direction': item.direction.name,
-    }).toList(growable: false);
-    PublicStorageService.instance.writeJson(
-      subfolder: 'history',
-      fileName: 'transfer-history.json',
-      value: {
-        'updatedAt': DateTime.now().toIso8601String(),
-        'items': snapshot,
-      },
-    ).catchError((_) {
-      // History export is best-effort and must not interrupt transfers.
-    });
   }
 }

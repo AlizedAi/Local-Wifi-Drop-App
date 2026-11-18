@@ -15,13 +15,16 @@ import android.os.Build
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
+import android.media.AudioManager
+import android.media.ToneGenerator
+import android.os.Handler
+import android.os.Looper
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.File
 import java.io.FileInputStream
-import java.io.ByteArrayInputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.Inet4Address
@@ -69,6 +72,8 @@ class MainActivity : FlutterActivity() {
 
     private val networkChannel = "local_wifi_drop/network"
     private val storageChannel = "local_wifi_drop/storage"
+    private val settingsChannel = "local_wifi_drop/settings"
+    private val soundChannel = "local_wifi_drop/sound"
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
@@ -111,6 +116,23 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, settingsChannel)
+            .setMethodCallHandler { call, result ->
+                val preferences = getSharedPreferences("local_wifi_drop_settings", Context.MODE_PRIVATE)
+                when (call.method) {
+                    "getLanguage" -> result.success(preferences.getString("language", "en"))
+                    "setLanguage" -> {
+                        val language = call.arguments as? String
+                        if (language == "en" || language == "fa") {
+                            preferences.edit().putString("language", language).apply()
+                            result.success(true)
+                        } else {
+                            result.error("INVALID_LANGUAGE", "Supported languages are en and fa.", null)
+                        }
+                    }
+                    else -> result.notImplemented()
+                }
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, networkChannel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -220,23 +242,44 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                     "requestStorageAccess" -> {
-                        if (Build.VERSION.SDK_INT >= 29) {
-                            result.success(isStorageAccessEnabled())
-                        } else if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                        if (isStorageAccessEnabled()) {
+                            result.success(true)
+                        } else if (Build.VERSION.SDK_INT >= 30) {
+                            val preferences = getSharedPreferences("local_wifi_drop_permissions", Context.MODE_PRIVATE)
+                            if (preferences.getBoolean("all_files_access_prompted", false)) {
+                                result.success(false)
+                            } else {
+                                preferences.edit().putBoolean("all_files_access_prompted", true).apply()
+                                try {
+                                    startActivity(
+                                        Intent(
+                                            Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                            android.net.Uri.parse("package:$packageName")
+                                        )
+                                    )
+                                    result.success(false)
+                                } catch (error: Exception) {
+                                    result.error("STORAGE_SETTINGS_FAILED", error.message, null)
+                                }
+                            }
+                        } else if (Build.VERSION.SDK_INT >= 23 &&
+                            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
                             PackageManager.PERMISSION_GRANTED
                         ) {
-                            result.success(isStorageAccessEnabled())
-                        } else if (storagePermissionResult != null) {
-                            result.error("PERMISSION_REQUEST_IN_PROGRESS", "A storage permission request is already active.", null)
-                        } else {
-                            storagePermissionResult = result
-                            pendingStorageAction = {
-                                result.success(isStorageAccessEnabled())
+                            if (storagePermissionResult != null) {
+                                result.error("PERMISSION_REQUEST_IN_PROGRESS", "A storage permission request is already active.", null)
+                            } else {
+                                storagePermissionResult = result
+                                pendingStorageAction = {
+                                    result.success(isStorageAccessEnabled())
+                                }
+                                requestPermissions(
+                                    arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+                                    storagePermissionRequestCode
+                                )
                             }
-                            requestPermissions(
-                                arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
-                                storagePermissionRequestCode
-                            )
+                        } else {
+                            result.success(isStorageAccessEnabled())
                         }
                     }
                     "openReceivedFolder" -> {
@@ -302,12 +345,18 @@ class MainActivity : FlutterActivity() {
                     }
                     "openStorageSettings" -> {
                         try {
-                            startActivity(
+                            val settingsIntent = if (Build.VERSION.SDK_INT >= 30) {
+                                Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    android.net.Uri.parse("package:$packageName")
+                                )
+                            } else {
                                 Intent(
                                     Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
                                     android.net.Uri.parse("package:$packageName")
                                 )
-                            )
+                            }
+                            startActivity(settingsIntent)
                             result.success(true)
                         } catch (error: Exception) {
                             result.error("STORAGE_SETTINGS_FAILED", error.message, null)
@@ -332,39 +381,95 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }
-                    "writeInfoFile" -> {
-                        val subfolder = call.argument<String>("subfolder") ?: "info"
-                        val fileName = call.argument<String>("fileName")
-                        val content = call.argument<String>("content")
-                        if (fileName.isNullOrBlank() || content == null ||
-                            subfolder.contains("..") || subfolder.startsWith("/") ||
-                            fileName.contains("/") || fileName.contains("\\")
-                        ) {
-                            result.error("INVALID_INFO_FILE", "Invalid information file path or content.", null)
+                    "deleteReceivedFile" -> {
+                        val uriText = call.argument<String>("uri")
+                        val sourcePath = call.argument<String>("sourcePath")
+                        if (uriText.isNullOrBlank() || sourcePath.isNullOrBlank()) {
+                            result.error("INVALID_FILE", "A saved file location is required.", null)
                         } else {
-                            withStoragePermission(result) {
-                                writeInfoFile(subfolder, fileName, content, result)
+                            try {
+                                val deletedPublished = if (uriText.startsWith("content://")) {
+                                    contentResolver.delete(android.net.Uri.parse(uriText), null, null) > 0
+                                } else {
+                                    File(uriText).delete()
+                                }
+                                val staging = File(sourcePath)
+                                val deletedStaging = !staging.exists() || staging.delete()
+                                if (deletedPublished && deletedStaging) {
+                                    result.success(true)
+                                } else {
+                                    result.error("DELETE_FAILED", "Android could not delete the received file from all storage locations.", null)
+                                }
+                            } catch (error: Exception) {
+                                result.error("DELETE_FAILED", error.message, null)
                             }
                         }
                     }
                     else -> result.notImplemented()
                 }
             }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, soundChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "playSent" -> result.success(
+                        playMessageTone(ToneGenerator.TONE_PROP_ACK, 130)
+                    )
+                    "playReceived" -> result.success(
+                        playMessageTone(ToneGenerator.TONE_PROP_BEEP2, 230)
+                    )
+                    else -> result.notImplemented()
+                }
+            }
+    }
+
+    private fun playMessageTone(tone: Int, durationMs: Int): Boolean {
+        val generator = try {
+            ToneGenerator(AudioManager.STREAM_NOTIFICATION, 85)
+        } catch (_: Exception) {
+            return false
+        }
+        val started = try {
+            generator.startTone(tone, durationMs)
+        } catch (_: Exception) {
+            false
+        }
+        if (started) {
+            Handler(Looper.getMainLooper()).postDelayed(
+                { generator.release() },
+                durationMs.toLong() + 100L
+            )
+        } else {
+            generator.release()
+        }
+        return started
     }
 
     private fun isStorageAccessEnabled(): Boolean {
         val storageMounted = Environment.getExternalStorageState() == Environment.MEDIA_MOUNTED
         if (!storageMounted) return false
-        return Build.VERSION.SDK_INT >= 29 ||
-            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
-            PackageManager.PERMISSION_GRANTED
+        return when {
+            Build.VERSION.SDK_INT >= 30 -> Environment.isExternalStorageManager()
+            Build.VERSION.SDK_INT >= 23 ->
+                checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                    PackageManager.PERMISSION_GRANTED
+            else -> true
+        }
     }
 
     private fun withStoragePermission(result: MethodChannel.Result, action: () -> Unit) {
-        if (Build.VERSION.SDK_INT >= 29 ||
-            checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-        ) {
+        val hasAccess = when {
+            Build.VERSION.SDK_INT >= 30 -> Environment.isExternalStorageManager()
+            Build.VERSION.SDK_INT >= 23 ->
+                checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                    PackageManager.PERMISSION_GRANTED
+            else -> true
+        }
+        if (hasAccess) {
             action()
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 30) {
+            result.error("STORAGE_PERMISSION_DENIED", "Allow all-files access in Android settings to save files.", null)
             return
         }
         if (storagePermissionResult != null) {
@@ -401,26 +506,6 @@ class MainActivity : FlutterActivity() {
         }.start()
     }
 
-    private fun writeInfoFile(
-        subfolder: String,
-        fileName: String,
-        content: String,
-        result: MethodChannel.Result
-    ) {
-        Thread {
-            try {
-                val relativePath = "Documents/Local Wi-Fi Drop/info/$subfolder/"
-                val uri = ByteArrayInputStream(content.toByteArray(Charsets.UTF_8)).use { input ->
-                    writePublicDocument(input, relativePath, fileName, overwrite = true)
-                }
-                runOnUiThread { result.success(uri) }
-            } catch (error: Exception) {
-                runOnUiThread { result.error("INFO_SAVE_FAILED", error.message, null) }
-            }
-        }.start()
-    }
-
-    @Suppress("DEPRECATION")
     private fun writePublicDocument(
         input: java.io.InputStream,
         relativePath: String,

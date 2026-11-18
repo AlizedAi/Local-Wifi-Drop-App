@@ -7,12 +7,8 @@ import 'app_language_controller.dart';
 import 'transfer_alert_controller.dart';
 
 /// Shared visual header for the Send and Receive pages.
-final GlobalKey _sendAlertButtonKey = GlobalKey();
-final GlobalKey _receiveAlertButtonKey = GlobalKey();
 final GlobalKey _logMenuItemKey = GlobalKey();
 final GlobalKey _logMenuLabelKey = GlobalKey();
-final GlobalKey<PopupMenuButtonState<String>> _sendOptionsMenuKey = GlobalKey();
-final GlobalKey<PopupMenuButtonState<String>> _receiveOptionsMenuKey = GlobalKey();
 
 class _PersistentPopupMenuEntry extends PopupMenuEntry<String> {
   const _PersistentPopupMenuEntry({
@@ -54,6 +50,7 @@ class SendHeader extends StatelessWidget {
     this.isReceive = false,
     this.alertsPanel,
     this.alertController,
+    required this.alertButtonKey,
     this.logPanelBottomKey,
     super.key,
   });
@@ -63,11 +60,14 @@ class SendHeader extends StatelessWidget {
   final bool isReceive;
   final Widget? alertsPanel;
   final TransferAlertController? alertController;
+  final GlobalKey alertButtonKey;
   final GlobalKey? logPanelBottomKey;
 
   static const Color _darkGreen = Color(0xFF073B20);
   static const Color _brightGreen = Color(0xFF20D65A);
-  static const Color _menuBackground = Color(0xFF242424);
+  static const Color _menuBackground = Colors.black;
+
+  String _tr(String value) => AppLanguageController.instance.translate(value);
 
   Widget _tab({
     required String label,
@@ -77,7 +77,7 @@ class SendHeader extends StatelessWidget {
     required Key key,
   }) {
     return Material(
-      color: active ? Colors.white : Colors.transparent,
+      color: active ? const Color(0xFF20C65A) : Colors.transparent,
       borderRadius: BorderRadius.circular(11),
       child: InkWell(
         key: key,
@@ -92,7 +92,7 @@ class SendHeader extends StatelessWidget {
                   Icon(icon, color: active ? Colors.black : Colors.white, size: 17),
                   const SizedBox(width: 7),
                   Text(
-                    label,
+                    _tr(label),
                     style: TextStyle(
                       color: active ? Colors.black : Colors.white,
                       fontWeight: FontWeight.w700,
@@ -131,29 +131,112 @@ class SendHeader extends StatelessWidget {
     );
   }
 
-  Widget _menuText(String value, {bool bold = false, double size = 17, Key? key}) {
+  Widget _menuText(String value, {Key? key}) {
     return Text(
-      value,
+      _tr(value),
       key: key,
-      style: TextStyle(
+      style: const TextStyle(
         color: Colors.white,
-        fontSize: size,
-        fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+        fontSize: 17,
+        fontWeight: FontWeight.w600,
       ),
     );
   }
 
   Widget _wifiRow() => Center(
-        child: _menuText('Wi-Fi', bold: true, size: 22, key: const ValueKey('options-wifi-label')),
+        child: _menuText('Wifi', key: const ValueKey('options-wifi-label')),
       );
 
   Widget _notificationRow() => Center(
-        child: _menuText('Notifications', bold: true, size: 22, key: const ValueKey('options-notifications-label')),
+        child: _menuText('Notifications', key: const ValueKey('options-notifications-label')),
       );
 
   Widget _storageRow() => Center(
-        child: _menuText('Storage', bold: true, size: 22, key: const ValueKey('options-storage-label')),
+        child: _menuText('Storage', key: const ValueKey('options-storage-label')),
       );
+
+  void _showImportantDialog(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Colors.black,
+        icon: const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 34),
+        title: Text(
+          _tr('Important'),
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.w800),
+        ),
+        content: Text(
+          _tr('Files and messages are transferred over your local Wi-Fi network without encryption. Do not send passwords, financial information, private documents, or other sensitive content. Only transfer files to devices and people you trust.'),
+          style: const TextStyle(color: Colors.white),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(_tr('I understand')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showAboutDialog(BuildContext context) {
+    final aboutText = AppLanguageController.instance.isPersian
+        ? 'سازنده : Ali.z با کمک Chat GPT به اسم Nova\n\n'
+            'تماس با ما : Zeydi.Ali.71@Gmail.com\n\n'
+            'توضیحات :\n'
+            'شما میتوانید به کمک این نرم افزار با اتصال به یک wifi مشترک فایل با حجم بالا و سریع ارسال و دریافت کنید\n\n'
+            'امکانات :\n'
+            'بدون مصرف اینترنت\n'
+            'ارسال فایل های حجیم با سرعت بالا\n'
+            'ارسال و دریافت پیام در خود نرم افزار\n\n'
+            'نکات مهم :\n'
+            'از دریافت فایل از IP های نامشخص خودداری کنید\n'
+            'این برنامه برای اتصال راحتتر و سبک رمزگزاری ندارد\n'
+            'از ارسال فایلهای حساس هنگام اتصال به مودم های عمومی جدا خودداری کنید.\n'
+            'برای دریافت فایل حتما باید در صفحه ی دریافت باشید.\n\n'
+            'امیدوارم لذت ببرید'
+        : 'Creator: Ali.z with the help of ChatGPT named Nova\n\n'
+            'Contact us: Zeydi.Ali.71@gmail.com\n\n'
+            'Description:\n'
+            'With this app, you can quickly send and receive large files by connecting to the same Wi-Fi network.\n\n'
+            'Features:\n'
+            'No internet usage\n'
+            'High-speed transfer of large files\n'
+            'Send and receive messages within the app\n\n'
+            'Important notes:\n'
+            'Do not accept files from unknown IP addresses.\n'
+            'This app does not use encryption to make connections easier and keep it lightweight.\n'
+            'Never send sensitive files while connected to public Wi-Fi routers.\n'
+            'To receive files, you must be on the Receive tab.\n\n'
+            'I hope you enjoy it.';
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: Colors.black,
+        title: const Text(
+          'Local Wi-Fi Drop',
+          textAlign: TextAlign.center,
+          style: TextStyle(color: Colors.white),
+        ),
+        content: SingleChildScrollView(
+          child: SelectableText(
+            aboutText,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white, height: 1.45),
+          ),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: Text(_tr('Close')),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _languageRow() {
     return ValueListenableBuilder<String>(
@@ -170,6 +253,7 @@ class SendHeader extends StatelessWidget {
                 'SETTINGS',
                 'Display language selected: $value',
               );
+              Navigator.of(context, rootNavigator: true).pop();
             },
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
@@ -177,8 +261,8 @@ class SendHeader extends StatelessWidget {
                 code,
                 style: TextStyle(
                   color: active ? const Color(0xFF20D65A) : Colors.white,
-                  fontSize: 16,
-                  fontWeight: active ? FontWeight.w800 : FontWeight.w500,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ),
@@ -189,7 +273,7 @@ class SendHeader extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Center(child: _menuText('Languages', bold: true, size: 17)),
+            Center(child: _menuText('Languages')),
             const SizedBox(height: 2),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
@@ -233,7 +317,8 @@ class SendHeader extends StatelessWidget {
                 Positioned(
                   left: 0,
                   child: _AlertDropdownButton(
-                    key: isReceive ? _receiveAlertButtonKey : _sendAlertButtonKey,
+                    key: alertButtonKey,
+                    isReceive: isReceive,
                     panel: alertsPanel!,
                     alertController: alertController,
                   ),
@@ -245,8 +330,7 @@ class SendHeader extends StatelessWidget {
                     return KeyedSubtree(
                       key: ValueKey(isReceive ? 'receive-options-menu' : 'send-options-menu'),
                       child: PopupMenuButton<String>(
-                  key: isReceive ? _receiveOptionsMenuKey : _sendOptionsMenuKey,
-                  tooltip: 'Options',
+                  tooltip: _tr('Options'),
                   position: PopupMenuPosition.under,
                   offset: const Offset(0, 7),
                   color: _menuBackground,
@@ -275,67 +359,34 @@ class SendHeader extends StatelessWidget {
                     // Settings destinations are handled by each item's onTap callback.
                   },
                   itemBuilder: (context) => [
-                    PopupMenuItem<String>(
-                      value: 'alert',
-                      height: 40,
-                      padding: const EdgeInsets.symmetric(horizontal: 10),
-                      onTap: () {
-                        if (alertsPanel != null) {
-                          WidgetsBinding.instance.addPostFrameCallback((_) {
-                            _AlertDropdownButton.showPanel(
-                              context,
-                              isReceive ? _receiveAlertButtonKey : _sendAlertButtonKey,
-                              alertsPanel!,
-                            );
-                          });
-                        }
-                      },
-                      child: Center(
-                        child: _menuText('Alert', bold: true, size: 18),
-                      ),
-                    ),
-                    _PersistentPopupMenuEntry(
-                      key: _logMenuItemKey,
-                      entryHeight: 40,
-                      value: 'log',
-                      onTap: () {
-                        AppLogController.instance.record('UI', 'Log option selected');
-                        _AlertDropdownButton.showLogPanel(
-                          context,
-                          _logMenuItemKey,
-                          _logMenuLabelKey,
-                          logPanelBottomKey,
-                        );
-                      },
-                      child: Center(
-                        child: Text(
-                          'Log',
-                          key: _logMenuLabelKey,
-                          style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w700),
+                    _menuItem(
+                      'important',
+                      Center(
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            const Icon(Icons.warning_amber_rounded, color: Colors.orange, size: 19),
+                            const SizedBox(width: 7),
+                            Flexible(
+                              child: Text(
+                                _tr('IMPORTANT'),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(
+                                  color: Colors.orange,
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w900,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
+                      height: 46,
+                      onTap: () => _showImportantDialog(context),
                     ),
                     _menuItem('languages', _languageRow(), height: 64),
-                    _menuItem(
-                      'wifi',
-                      _wifiRow(),
-                      height: 42,
-                      onTap: () async {
-                        AppLogController.instance.record(
-                          'SETTINGS',
-                          'Opening Android Wi-Fi settings',
-                        );
-                        try {
-                          await const MethodChannel('local_wifi_drop/network')
-                              .invokeMethod<void>('openWifiSettings');
-                        } on PlatformException catch (error) {
-                          AppLogController.instance.record(
-                            'ERROR',
-                            'Could not open Wi-Fi settings: ${error.message ?? error.code}',
-                          );
-                        }
-                      },
-                    ),
                     _menuItem(
                       'notifications',
                       _notificationRow(),
@@ -377,19 +428,66 @@ class SendHeader extends StatelessWidget {
                       },
                     ),
                     _menuItem(
-                      'about',
-                      Center(child: _menuText('About', bold: true, size: 18)),
+                      'wifi',
+                      _wifiRow(),
                       height: 42,
-                      onTap: () {
-                        showAboutDialog(
-                          context: context,
-                          applicationName: 'Local Wifi Drop',
-                          applicationVersion: '1.0.113 (Build 6)',
-                          applicationLegalese: 'Local Wi-Fi file and message transfer.',
+                      onTap: () async {
+                        AppLogController.instance.record(
+                          'SETTINGS',
+                          'Opening Android Wi-Fi settings',
                         );
+                        try {
+                          await const MethodChannel('local_wifi_drop/network')
+                              .invokeMethod<void>('openWifiSettings');
+                        } on PlatformException catch (error) {
+                          AppLogController.instance.record(
+                            'ERROR',
+                            'Could not open Wi-Fi settings: ${error.message ?? error.code}',
+                          );
+                        }
                       },
                     ),
-                    _menuItem('exit', Center(child: _menuText('Exit', bold: true, size: 18)), height: 42),
+                    PopupMenuItem<String>(
+                      value: 'alert',
+                      height: 40,
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      onTap: () {
+                        if (alertsPanel != null) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            _AlertDropdownButton.showPanel(
+                              context,
+                              alertButtonKey,
+                              alertsPanel!,
+                            );
+                          });
+                        }
+                      },
+                      child: Center(child: _menuText('Alert')),
+                    ),
+                    _PersistentPopupMenuEntry(
+                      key: _logMenuItemKey,
+                      entryHeight: 40,
+                      value: 'log',
+                      onTap: () {
+                        AppLogController.instance.record('UI', 'Log option selected');
+                        _AlertDropdownButton.showLogPanel(
+                          context,
+                          _logMenuItemKey,
+                          _logMenuLabelKey,
+                          logPanelBottomKey,
+                        );
+                      },
+                      child: Center(
+                        child: _menuText('Log', key: _logMenuLabelKey),
+                      ),
+                    ),
+                    _menuItem(
+                      'about',
+                      Center(child: _menuText('About')),
+                      height: 42,
+                      onTap: () => _showAboutDialog(context),
+                    ),
+                    _menuItem('exit', Center(child: _menuText('Exit')), height: 42),
                   ],
                       ),
                     );
@@ -444,9 +542,10 @@ class _NoopListenable implements Listenable {
 }
 
 class _AlertDropdownButton extends StatelessWidget {
-  const _AlertDropdownButton({required this.panel, required this.alertController, super.key});
+  const _AlertDropdownButton({required this.panel, required this.alertController, required this.isReceive, super.key});
   final Widget panel;
   final TransferAlertController? alertController;
+  final bool isReceive;
 
   @override
   Widget build(BuildContext context) {
@@ -458,10 +557,10 @@ class _AlertDropdownButton extends StatelessWidget {
         AppLogController.instance.record('UI', 'Alert action list opened');
         controller?.markAlertsViewed();
       },
-      tooltip: 'Alerts and transfer history',
+      tooltip: AppLanguageController.instance.translate('Alerts and transfer history'),
       position: PopupMenuPosition.under,
       offset: const Offset(0, 7),
-      color: const Color(0xFF202020),
+      color: Colors.black,
       surfaceTintColor: Colors.transparent,
       elevation: 12,
       constraints: const BoxConstraints(minWidth: 200, maxWidth: 200),
@@ -475,7 +574,7 @@ class _AlertDropdownButton extends StatelessWidget {
         ),
       ],
       child: SizedBox(
-        key: ValueKey(key == _receiveAlertButtonKey ? 'receive-alerts-button' : 'send-alerts-button'),
+        key: ValueKey(isReceive ? 'receive-alerts-button' : 'send-alerts-button'),
         width: 32,
         height: 32,
         child: Material(
@@ -596,7 +695,7 @@ class _AlertDropdownButton extends StatelessWidget {
     await showMenu<void>(
       context: context,
       position: anchor,
-      color: const Color(0xFF202020),
+      color: Colors.black,
       surfaceTintColor: Colors.transparent,
       elevation: 12,
       constraints: const BoxConstraints(minWidth: 200, maxWidth: 200),

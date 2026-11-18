@@ -48,8 +48,8 @@ class ChatTranscript extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 3),
               child: Align(
                 alignment: message.isOutgoing
-                    ? Alignment.centerRight
-                    : Alignment.centerLeft,
+                    ? Alignment.centerLeft
+                    : Alignment.centerRight,
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 300),
                   child: DecoratedBox(
