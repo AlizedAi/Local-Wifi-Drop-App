@@ -1,0 +1,189 @@
+name: Windows 7 SP1 x64 compatibility build
+
+on:
+  push:
+    branches: [windows-7]
+    paths:
+      - '.github/workflows/windows-7.yml'
+      - 'pubspec.yaml'
+      - 'windows_version.txt'
+      - 'lib/**'
+      - 'test/**'
+      - 'docs/**'
+      - 'windows_version.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-7-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Flutter 3.19.6
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.19.6"
+          cache: true
+      - name: Exclude Android project from Windows-targeted test job
+        run: |
+          if [ -d android ]; then mv android android_ci_disabled; fi
+      - name: Resolve Flutter 3.19-compatible packages
+        run: flutter pub get
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+      - name: Run tests
+        run: flutter test
+
+  build-windows-7:
+    needs: test
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter 3.19.6 (last Windows 7-compatible stable line)
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.19.6"
+          cache: true
+
+      - name: Install Visual Studio 2019 v142 C++ toolset
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vswhere.exe"
+          $vsInstaller = "${env:ProgramFiles(x86)}\\Microsoft Visual Studio\\Installer\\vs_installer.exe"
+          $vsPath = & $vswhere -latest -products * -property installationPath
+          if (!$vsPath -or !(Test-Path $vsInstaller)) {
+            throw "Visual Studio 2022 installation or installer was not found."
+          }
+
+          # The hosted Windows 2022 image may not include the legacy v142 compiler.
+          & $vsInstaller modify --installPath $vsPath --add Microsoft.VisualStudio.Component.VC.14.29.16.11.x86.x64 --quiet --norestart --wait
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installing the Visual Studio v142 C++ toolset failed (exit $LASTEXITCODE)."
+          }
+
+          $v142Path = Join-Path $vsPath "VC/Tools/MSVC"
+          $v142Folder = Get-ChildItem $v142Path -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -like "14.29.*" } |
+            Select-Object -First 1
+          if (!$v142Folder) {
+            throw "Visual Studio v142 compiler directory (14.29.x) is still missing after installation."
+          }
+          "VS_INSTALLATION=$vsPath" >> $env:GITHUB_ENV
+          Write-Host "Verified v142 compiler directory: $($v142Folder.FullName)"
+
+      - name: Generate the Windows runner
+        shell: pwsh
+        run: |
+          flutter create --platforms=windows --project-name local_wifi_drop --no-pub .
+          if ($LASTEXITCODE -ne 0) { throw "Flutter Windows runner generation failed." }
+          # This is a Windows-only build. Keep Android sources intact in Git,
+          # but exclude them from Flutter's legacy-embedding validation here.
+          if (Test-Path "android") {
+            Rename-Item "android" "android_ci_disabled"
+          }
+
+      - name: Resolve Flutter 3.19-compatible packages
+        run: flutter pub get
+
+      - name: Remove unused JNI plugin entry
+        shell: pwsh
+        run: |
+          $pluginFile = "windows/flutter/generated_plugins.cmake"
+          if (!(Test-Path $pluginFile)) { throw "Generated Flutter plugin list is missing." }
+          $content = Get-Content $pluginFile -Raw
+          $filtered = [regex]::Replace($content, '(?m)^[ \t]*jni[ \t]*\r?\n', '')
+          if ($filtered -ne $content) {
+            Set-Content -Path $pluginFile -Value $filtered -NoNewline
+            Write-Host "Removed unused JNI FFI plugin entry."
+          }
+
+      - name: Read Windows app version
+        id: app-version
+        shell: pwsh
+        run: |
+          $version = (Get-Content "windows_version.txt" -Raw).Trim()
+          $parts = $version.Split('.')
+          if ($parts.Length -ne 3 -or $parts[0] -ne '1' -or $parts[1] -ne '1' -or $parts[2] -ne '00') {
+            throw "windows_version.txt must contain a version in the form 1.0.xxx"
+          }
+          $buildNumber = ([int]$parts[0] * 10000) + ([int]$parts[1] * 100) + [int]$parts[2]
+          "value=$version" >> $env:GITHUB_OUTPUT
+          "build_number=$buildNumber" >> $env:GITHUB_OUTPUT
+
+      - name: Generate Flutter Windows build files
+        shell: pwsh
+        run: |
+          flutter build windows --release --build-name "${{ steps.app-version.outputs.value }}" --build-number "${{ steps.app-version.outputs.build_number }}" --dart-define=APP_VERSION=${{ steps.app-version.outputs.value }}
+
+      - name: Rebuild with Windows 7-compatible v142 toolset
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force "build/windows/x64" -ErrorAction SilentlyContinue
+          cmake -S windows -B build/windows/x64 -G "Visual Studio 17 2022" -A x64 -T v142 -DFLUTTER_TARGET_PLATFORM=windows-x64
+          if ($LASTEXITCODE -ne 0) { throw "CMake configuration with v142 failed." }
+          cmake --build build/windows/x64 --config Release --target INSTALL
+          if ($LASTEXITCODE -ne 0) { throw "Windows x64 v142 build failed." }
+
+      - name: Package portable Windows 7 build
+        shell: pwsh
+        run: |
+          $releaseDir = "build/windows/x64/runner/Release"
+          $exe = Join-Path $releaseDir "local_wifi_drop.exe"
+          if (!(Test-Path $exe)) { throw "Windows executable was not produced." }
+          if (!(Test-Path (Join-Path $releaseDir "data/flutter_assets"))) {
+            throw "Flutter assets are missing from the Windows release."
+          }
+
+          $jniDll = Join-Path $releaseDir "dartjni.dll"
+          if (Test-Path $jniDll) { Remove-Item $jniDll -Force }
+          if (Test-Path $jniDll) { throw "Unused dartjni.dll remains in the package." }
+
+          $crtRoot = Join-Path $env:VS_INSTALLATION "VC/Redist/MSVC"
+          $crtFolder = Get-ChildItem $crtRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName "x64/Microsoft.VC142.CRT" } |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+          if (!$crtFolder) { throw "Visual C++ v142 runtime folder was not found." }
+          Get-ChildItem $crtFolder -Filter "*.dll" | Copy-Item -Destination $releaseDir -Force
+
+          foreach ($runtimeName in @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")) {
+            if (!(Test-Path (Join-Path $releaseDir $runtimeName))) {
+              throw "Required v142 runtime DLL is missing: $runtimeName"
+            }
+          }
+
+          Rename-Item $exe "Local-Wifi-Drop.exe"
+          @(
+            "Local Wi-Fi Drop ${{ steps.app-version.outputs.value }} - Windows 7 SP1 x64 compatibility build",
+            "",
+            "Extract the entire ZIP before running Local-Wifi-Drop.exe.",
+            "Requires Windows 7 SP1 x64 with servicing updates through 2019, including KB2999226 (Universal C Runtime).",
+            "The required Visual C++ v142 runtime DLLs are included in this folder.",
+            "On first launch, allow Local Wi-Fi Drop through Windows Firewall on Private networks.",
+            "Both devices must be on the same reachable LAN or hotspot.",
+            "",
+            "This is a compatibility test build. Physical Windows 7 testing is required.",
+            "Transfers use direct unencrypted LAN connections."
+          ) | Set-Content -Encoding UTF8 (Join-Path $releaseDir "README-Windows-7.txt")
+
+          Compress-Archive -Path "$releaseDir/*" -DestinationPath "Local-Wifi-Drop-${{ steps.app-version.outputs.value }}-Windows-7-x64.zip" -Force
+
+      - name: Upload Windows 7 portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Local-Wifi-Drop-${{ steps.app-version.outputs.value }}-Windows-7-x64
+          path: Local-Wifi-Drop-${{ steps.app-version.outputs.value }}-Windows-7-x64.zip
+          if-no-files-found: error
+          retention-days: 30
