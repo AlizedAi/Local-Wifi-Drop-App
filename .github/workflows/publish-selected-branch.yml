@@ -1,11 +1,6 @@
 name: Publish selected app branch
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/publish-selected-branch.yml
   workflow_dispatch:
     inputs:
       platform:
@@ -21,20 +16,6 @@ permissions:
   contents: write
 
 jobs:
-  validate-workflow:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout workflow
-        uses: actions/checkout@v4
-      - name: Validate workflow file
-        shell: bash
-        run: |
-          test -f .github/workflows/publish-selected-branch.yml
-          grep -q 'workflow_dispatch:' .github/workflows/publish-selected-branch.yml
-          grep -q 'windows-10' .github/workflows/publish-selected-branch.yml
-          grep -q 'windows-7' .github/workflows/publish-selected-branch.yml
-
   publish:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
