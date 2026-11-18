@@ -1,6 +1,6 @@
 name: Publish selected app branch
 
-on:
+"on":
   workflow_dispatch:
     inputs:
       platform:
