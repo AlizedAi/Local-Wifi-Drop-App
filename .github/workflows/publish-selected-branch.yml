@@ -72,6 +72,10 @@ jobs:
             private-source/ publish/
           find publish -type d \( -name '.git' -o -name '.github' \) -prune -exec rm -rf {} +
           rm -f publish/README.md
+          if [ "${{ inputs.platform }}" = "android" ]; then
+            mkdir -p publish/.github/workflows
+            cp .github/workflows/publish-selected-branch.yml publish/.github/workflows/
+          fi
           cat > publish/README.md <<'EOF'
 # Local Wi-Fi Drop
 
@@ -89,8 +93,9 @@ EOF
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git branch -D "$DESTINATION_BRANCH" 2>/dev/null || true
           git switch --orphan "$DESTINATION_BRANCH"
-          git rm -rf . >/dev/null 2>&1 || true
+          find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -a publish/. .
           git add -A
           git commit -m "Publish software-only ${{ inputs.platform }} source"
