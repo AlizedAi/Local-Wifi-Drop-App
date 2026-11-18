@@ -1,0 +1,120 @@
+name: Windows x64 test build
+
+on:
+  push:
+    branches: [windows-10]
+    paths:
+      - '.github/workflows/windows-x64.yml'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'windows_version.txt'
+      - 'lib/**'
+      - 'test/**'
+      - 'docs/**'
+      - 'windows_version.txt'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-x64-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.9"
+          cache: true
+
+      - name: Generate the Windows runner
+        run: flutter create --platforms=windows --project-name local_wifi_drop .
+
+      - name: Resolve packages
+        run: flutter pub get
+
+      - name: Exclude unused JNI native library from Windows
+        shell: pwsh
+        run: |
+          $pluginFile = "windows/flutter/generated_plugins.cmake"
+          if (!(Test-Path $pluginFile)) { throw "Generated Flutter plugin list is missing." }
+          $content = Get-Content $pluginFile -Raw
+          $filtered = [regex]::Replace($content, '(?m)^[ \t]*jni[ \t]*\r?\n', '')
+          if ($filtered -eq $content) {
+            Write-Host "No JNI plugin entry found in the Windows plugin list."
+          } else {
+            Set-Content -Path $pluginFile -Value $filtered -NoNewline
+            Write-Host "Removed the unused JNI FFI plugin; Local Wi-Fi Drop does not start a JVM on Windows."
+          }
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Run tests on Windows
+        run: flutter test
+
+      - name: Calculate Windows build version
+        id: app-version
+        shell: pwsh
+        run: |
+          $version = (Get-Content "windows_version.txt" -Raw).Trim()
+          $parts = $version.Split('.')
+          if ($parts.Length -ne 3 -or $parts -match '[^0-9]') {
+            throw "windows_version.txt must contain a numeric three-part version such as 1.1.00"
+          }
+          $buildNumber = ([int]$parts[0] * 10000) + ([int]$parts[1] * 100) + [int]$parts[2]
+          "value=$version" >> $env:GITHUB_OUTPUT
+          "build_number=$buildNumber" >> $env:GITHUB_OUTPUT
+
+      - name: Build Windows x64
+        shell: pwsh
+        run: |
+          flutter build windows --release --no-pub `
+            --build-name "${{ steps.app-version.outputs.value }}" `
+            --build-number "${{ steps.app-version.outputs.build_number }}" `
+            --dart-define=APP_VERSION=${{ steps.app-version.outputs.value }}
+
+      - name: Package portable app
+        shell: pwsh
+        run: |
+          $releaseDir = "build/windows/x64/runner/Release"
+          $exe = Join-Path $releaseDir "local_wifi_drop.exe"
+          if (!(Test-Path $exe)) { throw "Windows executable was not produced." }
+          if (!(Test-Path (Join-Path $releaseDir "data/flutter_assets"))) { throw "Flutter assets are missing from the Windows release." }
+          $jniDll = Join-Path $releaseDir "dartjni.dll"
+          if (Test-Path $jniDll) { Remove-Item $jniDll -Force }
+          $runtimeNames = @("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll")
+          foreach ($runtimeName in $runtimeNames) {
+            $runtimeSource = Join-Path "$env:WINDIR\System32" $runtimeName
+            if (!(Test-Path $runtimeSource)) { throw "Required Visual C++ runtime DLL is missing: $runtimeName" }
+            Copy-Item -Path $runtimeSource -Destination $releaseDir -Force
+          }
+          foreach ($runtimeName in $runtimeNames) { if (!(Test-Path (Join-Path $releaseDir $runtimeName))) { throw "Visual C++ runtime DLL was not bundled: $runtimeName" } }
+          Rename-Item $exe "Local-Wifi-Drop.exe"
+
+          # Package only runtime files: EXE, required DLLs and Flutter data.
+          # Exclude debug symbols, generated metadata and documentation.
+          $packageDir = "package/Local-Wifi-Drop"
+          if (Test-Path "package") { Remove-Item "package" -Recurse -Force }
+          New-Item -ItemType Directory -Path $packageDir -Force | Out-Null
+          Copy-Item (Join-Path $releaseDir "Local-Wifi-Drop.exe") $packageDir
+          Copy-Item (Join-Path $releaseDir "*.dll") $packageDir
+          Copy-Item (Join-Path $releaseDir "data") $packageDir -Recurse
+          if (Test-Path (Join-Path $packageDir "dartjni.dll")) { throw "Unused dartjni.dll remains in the portable package." }
+          Compress-Archive -Path "$packageDir/*" -DestinationPath "Local-Wifi-Drop-${{ steps.app-version.outputs.value }}-Windows-x64.zip" -Force
+
+      - name: Upload Windows portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Local-Wifi-Drop-${{ steps.app-version.outputs.value }}-Windows-x64
+          path: Local-Wifi-Drop-${{ steps.app-version.outputs.value }}-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
