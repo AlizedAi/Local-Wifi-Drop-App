@@ -1,0 +1,106 @@
+name: Publish Local Wi-Fi Drop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version
+        required: true
+        default: "1.1.00"
+        type: string
+      android_artifact_id:
+        description: Android APK artifact ID (from this public repository)
+        required: true
+        type: string
+      windows10_artifact_id:
+        description: Windows 10 x64 artifact ID (from the private source repository)
+        required: true
+        type: string
+      windows7_artifact_id:
+        description: Windows 7 SP1 x64 artifact ID (from the private source repository)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release version
+        shell: bash
+        run: |
+          if [ "${{ inputs.version }}" != "1.1.00" ]; then
+            echo "This release workflow is currently configured for version 1.1.00 only."
+            exit 1
+          fi
+
+      - name: Download Android artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_ID: ${{ inputs.android_artifact_id }}
+        run: |
+          mkdir -p release/android
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts/$ARTIFACT_ID/zip" \
+            -o /tmp/android-artifact.zip
+          unzip -q /tmp/android-artifact.zip -d release/android
+          APK="$(find release/android -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          cp "$APK" "release/Local-Wifi-Drop-${{ inputs.version }}-Universal-Android.apk"
+
+      - name: Download Windows 10 artifact from private source
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          ARTIFACT_ID: ${{ inputs.windows10_artifact_id }}
+        run: |
+          mkdir -p release/windows10
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/AlizedAi/Local-Wifi-Drop/actions/artifacts/$ARTIFACT_ID/zip" \
+            -o /tmp/windows10-artifact.zip
+          unzip -q /tmp/windows10-artifact.zip -d release/windows10
+          PACKAGE="$(find release/windows10 -type f -name '*.zip' -print -quit)"
+          test -n "$PACKAGE"
+          cp "$PACKAGE" "release/Local-Wifi-Drop-${{ inputs.version }}-Windows-x64.zip"
+
+      - name: Download Windows 7 artifact from private source
+        env:
+          GH_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+          ARTIFACT_ID: ${{ inputs.windows7_artifact_id }}
+        run: |
+          mkdir -p release/windows7
+          curl -fL -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/AlizedAi/Local-Wifi-Drop/actions/artifacts/$ARTIFACT_ID/zip" \
+            -o /tmp/windows7-artifact.zip
+          unzip -q /tmp/windows7-artifact.zip -d release/windows7
+          PACKAGE="$(find release/windows7 -type f -name '*.zip' -print -quit)"
+          test -n "$PACKAGE"
+          cp "$PACKAGE" "release/Local-Wifi-Drop-${{ inputs.version }}-Windows-7-x64.zip"
+
+      - name: Verify release assets
+        run: |
+          test -s "release/Local-Wifi-Drop-${{ inputs.version }}-Universal-Android.apk"
+          test -s "release/Local-Wifi-Drop-${{ inputs.version }}-Windows-x64.zip"
+          test -s "release/Local-Wifi-Drop-${{ inputs.version }}-Windows-7-x64.zip"
+          ls -lh release/Local-Wifi-Drop-${{ inputs.version }}-*
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ inputs.version }}
+          name: Local Wi-Fi Drop ${{ inputs.version }}
+          target_commitish: main
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            release/Local-Wifi-Drop-${{ inputs.version }}-Universal-Android.apk
+            release/Local-Wifi-Drop-${{ inputs.version }}-Windows-x64.zip
+            release/Local-Wifi-Drop-${{ inputs.version }}-Windows-7-x64.zip
