@@ -1,0 +1,35 @@
+# Flutter / Dart generated output
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+.flutter-plugins
+.flutter-plugins-dependencies
+build/
+coverage/
+
+# IDE and operating-system files
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local Android configuration and signing secrets
+android/.gradle/
+android/local.properties
+android/key.properties
+*.jks
+*.keystore
+
+# Generated desktop/mobile platform files
+windows/flutter/ephemeral/
+windows/runner/Debug/
+windows/runner/Release/
+ios/Flutter/ephemeral/
+macos/Flutter/ephemeral/
+
+# Temporary and diagnostic files
+*.log
+*.tmp
+*.bak

@@ -1,0 +1,23 @@
+name: local_wifi_drop
+description: Local-first peer-to-peer file sharing over Wi-Fi.
+publish_to: "none"
+version: 1.0.148+148
+
+environment:
+  sdk: ">=3.3.4 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  file_picker: 8.0.5
+  open_filex: ^4.7.0
+  crypto: 3.0.3
+  flutter_foreground_task: ^8.17.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.2
+
+flutter:
+  uses-material-design: true
