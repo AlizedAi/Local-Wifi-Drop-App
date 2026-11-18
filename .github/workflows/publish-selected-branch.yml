@@ -1,0 +1,97 @@
+name: Publish selected app branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Select the app platform to publish
+        required: true
+        type: choice
+        options:
+          - android
+          - windows-10
+          - windows-7
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout public repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Select source branch
+        id: source
+        shell: bash
+        run: |
+          case "${{ inputs.platform }}" in
+            android)
+              echo "branch=main" >> "$GITHUB_OUTPUT"
+              echo "destination=main" >> "$GITHUB_OUTPUT"
+              ;;
+            windows-10)
+              echo "branch=windows-from-1.0.158" >> "$GITHUB_OUTPUT"
+              echo "destination=windows-10" >> "$GITHUB_OUTPUT"
+              ;;
+            windows-7)
+              echo "branch=windows-7-from-1.0.159" >> "$GITHUB_OUTPUT"
+              echo "destination=windows-7" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "Unsupported platform" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout private source branch
+        uses: actions/checkout@v4
+        with:
+          repository: AlizedAi/Local-Wifi-Drop
+          ref: ${{ steps.source.outputs.branch }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          path: private-source
+          fetch-depth: 1
+
+      - name: Prepare software-only tree
+        shell: bash
+        run: |
+          mkdir -p publish
+          rsync -a --delete \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='docs/' \
+            --exclude='ui/' \
+            --exclude='planning/' \
+            --exclude='plans/' \
+            --exclude='*.log' \
+            private-source/ publish/
+          find publish -type d \( -name '.git' -o -name '.github' \) -prune -exec rm -rf {} +
+          rm -f publish/README.md
+          cat > publish/README.md <<'EOF'
+# Local Wi-Fi Drop
+
+Platform application source published from the private development repository.
+
+**Important:** Transfers are not encrypted. Do not use this application to send sensitive files or over untrusted/public networks.
+
+No license or permission to reuse, redistribute, or modify this software is granted unless explicitly stated by the author.
+EOF
+
+      - name: Publish clean branch without private history
+        env:
+          DESTINATION_BRANCH: ${{ steps.source.outputs.destination }}
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch --orphan "$DESTINATION_BRANCH"
+          git rm -rf . >/dev/null 2>&1 || true
+          cp -a publish/. .
+          git add -A
+          git commit -m "Publish software-only ${{ inputs.platform }} source"
+          git push origin "HEAD:$DESTINATION_BRANCH" --force
