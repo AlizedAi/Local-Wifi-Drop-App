@@ -70,7 +70,7 @@ jobs:
             --exclude='plans/' \
             --exclude='*.log' \
             private-source/ /tmp/publish/
-          find publish -type d \( -name '.git' -o -name '.github' \) -prune -exec rm -rf {} +
+          find /tmp/publish -type d \( -name '.git' -o -name '.github' \) -prune -exec rm -rf {} +
           rm -f /tmp/publish/README.md
           if [ "${{ inputs.platform }}" = "android" ]; then
             mkdir -p /tmp/publish/.github/workflows
