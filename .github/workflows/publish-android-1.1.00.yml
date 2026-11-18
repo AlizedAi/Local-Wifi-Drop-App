@@ -1,0 +1,41 @@
+name: Publish Android 1.1.00
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-android-1.1.00.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the exact tested Android 1.0.158 code build artifact
+        env:
+          SOURCE_TOKEN: ${{ secrets.SOURCE_REPO_TOKEN }}
+        run: |
+          test -n "$SOURCE_TOKEN"
+          curl -fL \
+            -H "Authorization: Bearer $SOURCE_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/AlizedAi/Local-Wifi-Drop/actions/artifacts/14144638975/zip" \
+            -o /tmp/android-build.zip
+          mkdir -p /tmp/android-build
+          unzip -q /tmp/android-build.zip -d /tmp/android-build
+          APK="$(find /tmp/android-build -type f -name '*.apk' -print -quit)"
+          test -n "$APK"
+          test -s "$APK"
+          cp "$APK" Local-Wifi-Drop-1.1.00-Universal-Android.apk
+          ls -lh Local-Wifi-Drop-1.1.00-Universal-Android.apk
+
+      - name: Add Android 1.1.00 to the existing cross-platform release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload v1.1.00 Local-Wifi-Drop-1.1.00-Universal-Android.apk \
+            --repo "${GITHUB_REPOSITORY}" --clobber
+          gh release view v1.1.00 --repo "${GITHUB_REPOSITORY}"

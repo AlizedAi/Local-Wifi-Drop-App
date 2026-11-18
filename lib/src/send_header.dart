@@ -195,7 +195,7 @@ class SendHeader extends StatelessWidget {
             'این برنامه برای اتصال راحتتر و سبک رمزگزاری ندارد\n'
             'از ارسال فایلهای حساس هنگام اتصال به مودم های عمومی جدا خودداری کنید.\n'
             'برای دریافت فایل حتما باید در صفحه ی دریافت باشید.\n\n'
-            'امیدوارم لذت ببرید'
+            'امیدوارم لذت ببرید\n\nنسخه: 1.1.00'
         : 'Creator: Ali.z with the help of ChatGPT named Nova\n\n'
             'Contact us: Zeydi.Ali.71@gmail.com\n\n'
             'Description:\n'
@@ -209,7 +209,7 @@ class SendHeader extends StatelessWidget {
             'This app does not use encryption to make connections easier and keep it lightweight.\n'
             'Never send sensitive files while connected to public Wi-Fi routers.\n'
             'To receive files, you must be on the Receive tab.\n\n'
-            'I hope you enjoy it.';
+            'I hope you enjoy it.\n\nVersion: 1.1.00';
 
     showDialog<void>(
       context: context,
