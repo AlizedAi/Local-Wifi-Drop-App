@@ -164,11 +164,11 @@ jobs:
             }
           }
 
-          Rename-Item $exe "Local-Wifi-Drop.exe"
+          Rename-Item $exe "Local-Wifi-Drop-${{ steps.app-version.outputs.value }}.exe"
           @(
             "Local Wi-Fi Drop ${{ steps.app-version.outputs.value }} - Windows 7 SP1 x64 compatibility build",
             "",
-            "Extract the entire ZIP before running Local-Wifi-Drop.exe.",
+            "Extract the entire ZIP before running Local-Wifi-Drop-${{ steps.app-version.outputs.value }}.exe.",
             "Requires Windows 7 SP1 x64 with servicing updates through 2019, including KB2999226 (Universal C Runtime).",
             "The required Visual C++ v142 runtime DLLs are included in this folder.",
             "On first launch, allow Local Wi-Fi Drop through Windows Firewall on Private networks.",
